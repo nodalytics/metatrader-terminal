@@ -24,8 +24,9 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
-          source: "docker-compose.yml,.env.example"
+          source: "MT5/docker-compose.yml,MT5/.env.example"
           target: ${{ secrets.DEPLOY_PATH }}
+          strip_components: 1
 
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
