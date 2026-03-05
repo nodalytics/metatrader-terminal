@@ -5,11 +5,11 @@ services:
       - "18812:18812"
       - "6901:6901"
     environment:
+      VNC_USER: ${VNC_USER}
+      VNC_PASSWORD: ${VNC_PASSWORD}
       MT5_ACCOUNT_NUMBER: ${MT5_ACCOUNT_NUMBER}
       MT5_PASSWORD: ${MT5_PASSWORD}
       MT5_SERVER: ${MT5_SERVER}
-      VNC_USER: ${VNC_USER}
-      VNC_PASSWORD: ${VNC_PASSWORD}
     env_file:
       - .env
     volumes:
