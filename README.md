@@ -25,3 +25,9 @@ docker run -d --name metatrader5-terminal \
 ## Contributing
 
 Contributions are welcome! Please fork the repository and submit a pull request.
+
+
+## TODOs
+
+- Auto login to the terminal using credentials from environment variables
+
