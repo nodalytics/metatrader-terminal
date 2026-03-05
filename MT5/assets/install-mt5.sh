@@ -17,5 +17,6 @@ winecfg -v=win10
 wine MicrosoftEdgeWebview2Setup.exe /silent /install
 
 # Start MetaTrader installer
-# Note: This might require a GUI/VNC connection to complete if not fully silent.
-wine mt5setup.exe
+# /auto is the primary flag for unattended installation.
+# /path ensures it installs where our supervisord expects it.
+wine mt5setup.exe /auto /path:"C:\Metatrader 5"
