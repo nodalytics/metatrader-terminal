@@ -46,16 +46,12 @@ RUN apt-get update && \
     bzip2 \
     zip \
     unzip \
-    wget && \
+    wget \
+    xvfb \
+    libnss3 && \
     mkdir -p /usr/share/desktop-directories && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-
-# Install MetaTrader 5 Terminal
-RUN wget https://download.terminal.free/cdn/web/metaquotes.software.corp/mt5/mt5linux.sh && \
-    chmod +x mt5linux.sh && \
-    ./mt5linux.sh --no-interaction && \
-    rm mt5linux.sh
 
 # Copy easy-novnc binary from build stage
 COPY --from=novnc-build /bin/easy-novnc /usr/local/bin/
@@ -70,10 +66,15 @@ WORKDIR ${HOME}
 COPY assets .
 RUN wine pip install --no-cache-dir wheel && \
     wine pip install --no-cache-dir -r requirements.txt && \
-    chmod +x run_server.sh xtigervnc.sh easy-novnc.sh
+    chmod +x run_server.sh xtigervnc.sh easy-novnc.sh install-mt5.sh
+
+# Note: Automatic installation of MT5 terminal here may be interactive or fail headlessly.
+# It is included here as a script that can be run on container startup or manually.
+# To attempt installation during build (experimental):
+# RUN xvfb-run ./install-mt5.sh
 
 # TODO: Upgrade to wine >= 8 for better MT5 stability.
 
-EXPOSE 5900 18812 8000
+EXPOSE 18812 8000
 
 CMD ["supervisord"]

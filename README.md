@@ -15,7 +15,6 @@ To start the Metatrader terminal, use:
 ```bash
 docker rm -f metatrader5-terminal
 docker run -d --name metatrader5-terminal \
-  -p 5900:5900 \
   -p 18812:18812 \
   -p 8000:8000 \
   metatrader5-terminal
