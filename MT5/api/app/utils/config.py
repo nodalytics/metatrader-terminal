@@ -1,33 +1,34 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import BaseSettings, Field
 from typing import Union, List
 from pathlib import Path
 
 class EnvSettings(BaseSettings):
     # API Settings
-    API_NAME: str = Field("MetaTrader 5 API", validation_alias="API_NAME")
-    API_DESCRIPTION: str = Field("High-performance MT5 Trading Backend", validation_alias="API_DESCRIPTION")
-    API_VERSION: str = Field("1.0.0", validation_alias="API_VERSION")
-    API_DEBUG_MODE: bool = Field(False, validation_alias="API_DEBUG_MODE")
+    API_NAME: str = Field("MetaTrader 5 API", env="API_NAME")
+    API_DESCRIPTION: str = Field("High-performance MT5 Trading Backend", env="API_DESCRIPTION")
+    API_VERSION: str = Field("1.0.0", env="API_VERSION")
+    API_DEBUG_MODE: bool = Field(False, env="API_DEBUG_MODE")
     
     # Server Settings
-    HOST: str = Field("0.0.0.0", validation_alias="HOST")
-    PORT: int = Field(8000, validation_alias="MT5_API_PORT")
-    ENV_STATE: str = Field("development", validation_alias="ENV_STATE")
-    LOG_LEVEL: str = Field("INFO", validation_alias="LOG_LEVEL")
+    HOST: str = Field("0.0.0.0", env="HOST")
+    PORT: int = Field(8000, env="MT5_API_PORT")
+    ENV_STATE: str = Field("development", env="ENV_STATE")
+    LOG_LEVEL: str = Field("INFO", env="LOG_LEVEL")
 
     # Database Settings
-    DATABASE_URL: str = Field("sqlite:///./mt5_api/data/database.db", validation_alias="DATABASE_URL")
+    DATABASE_URL: str = Field("sqlite:///./mt5_api/data/database.db", env="DATABASE_URL")
 
     # MT5 Default Credentials (loaded from ENV if available)
-    MT5_LOGIN: int = Field(0, validation_alias="MT5_LOGIN")
-    MT5_PASSWORD: str = Field("", validation_alias="MT5_PASSWORD")
-    MT5_SERVER: str = Field("", validation_alias="MT5_SERVER")
+    MT5_LOGIN: int = Field(0, env="MT5_LOGIN")
+    MT5_PASSWORD: str = Field("", env="MT5_PASSWORD")
+    MT5_SERVER: str = Field("", env="MT5_SERVER")
     
     # Auth Settings
-    API_KEY_SEED: str = Field("", validation_alias="API_KEY_SEED")
+    API_KEY_SEED: str = Field("", env="API_KEY_SEED")
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    class Config:
+        env_file = ".env"
+        extra = "ignore"
 
 class Settings:
     def __init__(self):

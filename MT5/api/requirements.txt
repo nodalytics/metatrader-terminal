@@ -7,7 +7,7 @@ python-dotenv
 requests
 sqlalchemy
 MetaTrader5; sys_platform == 'win32'
-pydantic-settings
+pydantic<2.0.0
 apscheduler
 prometheus-fastapi-instrumentator
 greenlet==2.0.2  # Fixes "Microsoft Visual C++ 14.0 or greater is required" in Wine
