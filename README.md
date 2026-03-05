@@ -14,14 +14,12 @@ docker build -t metatrader5-terminal ./MT5
 To start the Metatrader terminal, use:
 ```bash
 # Run with custom credentials (optional)
-docker rm -f metatrader5-terminal
 docker run -d --name metatrader5-terminal \
   -e VNC_USER=mt5_user \
   -e VNC_PASSWORD=password \
   -p 18812:18812 \
   -p 6901:6901 \
   metatrader5-terminal
-  # -p 5900:5900 \
 ```
 
 ## Contributing
