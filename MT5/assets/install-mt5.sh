@@ -19,4 +19,4 @@ wine MicrosoftEdgeWebview2Setup.exe /silent /install
 # Start MetaTrader installer
 # /auto is the primary flag for unattended installation.
 # /path ensures it installs where our supervisord expects it.
-wine mt5setup.exe /auto /path:"C:\Metatrader 5"
+wine mt5setup.exe /auto /path:"C:\Metatrader-5"
