@@ -75,6 +75,6 @@ RUN wine pip install --no-cache-dir wheel && \
 
 # TODO: Upgrade to wine >= 8 for better MT5 stability.
 
-EXPOSE 18812 8000
+EXPOSE 5900 18812 8000
 
 CMD ["supervisord"]
