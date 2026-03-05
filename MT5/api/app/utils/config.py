@@ -1,5 +1,5 @@
 from pydantic import BaseSettings, Field
-from typing import Union, List
+from typing import Union, List, Any
 from pathlib import Path
 
 class EnvSettings(BaseSettings):
@@ -46,5 +46,12 @@ class Settings:
             return ""
         import hashlib
         return hashlib.sha256(self.env.API_KEY_SEED.encode("utf-8")).hexdigest()
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return getattr(self.env, name)
+        except AttributeError:
+            raise AttributeError(f"'Settings' object has no attribute '{name}'")
+
 
 settings = Settings()
