@@ -10,7 +10,7 @@ This Docker image provides a lightweight environment for running the Metatrader 
 - Runs Metatrader 5 Terminal using Wine.
 - Enables access to the RPYC API for remote control.
 - Includes `easy-novnc` for optional remote desktop access (requires additional configuration)
-- Exposes ports for RPYC API (18812) and potential VNC (8000)
+- Exposes ports for RPYC API (18812) and potential VNC (6901)
 
 ## Usage
 
@@ -25,7 +25,7 @@ docker build -t metatrader5-terminal .
 ```
 docker run -d --name metatrader5-terminal \
              -p 18812:18812 \
-             -p 8000:8000 \
+             -p 6901:6901 \
              metatrader5-terminal
 ```
 
