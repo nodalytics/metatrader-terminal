@@ -9,7 +9,7 @@ def main():
         f"Starting {settings.env.API_NAME} on {settings.env.HOST}:{settings.env.PORT}"
     )
     uvicorn.run(
-        "api.main:app",
+        "app.main:app",
         host=settings.env.HOST,
         port=settings.env.PORT,
         reload=settings.env.ENV_STATE == "development",
