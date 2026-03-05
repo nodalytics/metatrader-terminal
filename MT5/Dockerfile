@@ -1,3 +1,11 @@
+# Build stage for easy-novnc
+FROM golang:1.14-buster AS novnc-build
+WORKDIR /src
+RUN go mod init build && \
+    go get github.com/geek1011/easy-novnc@v1.1.0 && \
+    go build -o /bin/easy-novnc github.com/geek1011/easy-novnc
+
+# Final stage
 FROM docker.io/tobix/pywine:3.9
 
 # ----------------------------------------------------------------------------------------------
@@ -15,9 +23,8 @@ ENV HOME=/root \
     DRIVE_C=${WINEPREFIX}/drive_c \
     STOPSIGNAL=SIGRTMIN+3
 
-# MT5 Account Details (Can be overridden at runtime)
+# MT5 Account Details (Provide at runtime)
 ENV MT5_ACCOUNT_NUMBER='' \
-    MT5_PASSWORD='' \
     MT5_SERVER=''
 
 # Install system dependencies and clean up in a single layer
@@ -50,6 +57,9 @@ RUN wget https://download.terminal.free/cdn/web/metaquotes.software.corp/mt5/mt5
     ./mt5linux.sh --no-interaction && \
     rm mt5linux.sh
 
+# Copy easy-novnc binary from build stage
+COPY --from=novnc-build /bin/easy-novnc /usr/local/bin/
+
 # Copy configuration files
 COPY assets/menu.xml /etc/xdg/openbox/
 COPY assets/supervisord.conf /etc/
@@ -64,6 +74,6 @@ RUN wine pip install --no-cache-dir wheel && \
 
 # TODO: Upgrade to wine >= 8 for better MT5 stability.
 
-EXPOSE 5900 18812
+EXPOSE 5900 18812 8000
 
 CMD ["supervisord"]

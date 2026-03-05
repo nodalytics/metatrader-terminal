@@ -17,7 +17,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: mt5-terminal
+  IMAGE_NAME: ${{ github.repository_owner }}/mt5-terminal
 
 jobs:
   # ----------------------------------------------------------------
