@@ -1,33 +1,76 @@
-# Metatrader Terminals
+# MetaTrader 5 Terminal & API
 
-Tools and Scripts for packaging metatrader client terminals into a docker image.
+A professional, dockerized environment for MetaTrader 5, providing both a VNC-accessible desktop interface and a programmatic FastAPI interface.
 
-## Installation
+## 🏗️ Architecture
 
-To install the necessary dependencies, run:
-```bash
-docker build -t metatrader5-terminal ./MT5
+This repository packages everything needed to run a reliable MT5 instance on a Linux server:
+
+-   **MT5 Terminal (Docker)**: A Wine-based container running the MetaTrader 5 desktop client, accessible via VNC (web and client).
+-   **FastAPI Service**: A modern, high-performance API for interacting with the MT5 terminal programmatically.
+-   **Nginx Proxy**: Pre-configured proxy settings for handling SSL, WebSockets, and subdomain routing.
+-   **CI/CD**: GitHub Actions workflows for automated Docker builds and remote EC2 deployment.
+
+## 📁 Repository Structure
+
+```text
+├── .github/workflows/  # CI/CD pipelines (Build/Test & Deploy)
+├── MT5/                # Dockerized MT5 Terminal & FastAPI code
+├── docs/               # In-depth setup and CI/CD documentation
+├── nginx/              # Nginx site configurations and snippets
+├── Server/             # Legacy/Development server logic
+└── README.md           # You are here
 ```
 
-## Usage
+## 🚀 Getting Started
 
-To start the Metatrader terminal, use:
-```bash
-# Run with custom credentials (optional)
-docker run -d --name metatrader5-terminal \
-  -e VNC_USER=mt5_user \
-  -e VNC_PASSWORD=password \
-  -p 8000:8000 \
-  -p 6901:6901 \
-  metatrader5-terminal
-```
+### Prerequisites
+- Docker and Docker Compose installed.
+- (Optional) Nginx for production routing.
 
-## Contributing
+### Quick Start (Local)
+
+1.  **Clone the Repo**:
+    ```bash
+    git clone https://github.com/nodalytics/metatrader-terminal.git
+    cd metatrader-terminal
+    ```
+
+2.  **Environment Setup**:
+    Copy the example environment file and fill in your MT5 credentials:
+    ```bash
+    cp MT5/.env.example .env
+    ```
+
+3.  **Launch**:
+    ```bash
+    docker compose up -d --build
+    ```
+
+4.  **Access**:
+    - **MT5 VNC (Web)**: `http://localhost:6901` (User: `mt5_user`, Pass: `password`)
+    - **FastAPI Docs**: `http://localhost:8000/docs`
+
+## 📖 Documentation
+
+For production setups, please refer to the detailed guides in the `docs/` folder:
+
+-   [Server Setup Guide](file:///home/ose/Documents/Quants%20Pub/metatrader-terminal/docs/server-setup.md): Preparing your Linux/EC2 instance and Nginx.
+-   [CI/CD Pipeline Setup](file:///home/ose/Documents/Quants%20Pub/metatrader-terminal/docs/github-actions-setup.md): Connecting GitHub Actions for automated deployments.
+
+## 🛠️ Environment Variables
+
+The project uses the following key variables in your `.env`:
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `VNC_USER` | Username for VNC access | `mt5_user` |
+| `VNC_PASSWORD` | Password for VNC access | `password` |
+| `MT5_LOGIN` | Your MT5 Account Number | - |
+| `MT5_PASSWORD` | Your MT5 Trading Password | - |
+| `MT5_SERVER` | Your Broker's Server | - |
+
+## 🤝 Contributing
 
 Contributions are welcome! Please fork the repository and submit a pull request.
-
-
-## TODOs
-
-- Auto login to the terminal using credentials from environment variables
 
