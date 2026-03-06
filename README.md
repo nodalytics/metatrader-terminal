@@ -51,12 +51,15 @@ This repository packages everything needed to run a reliable MT5 instance on a L
     - **MT5 VNC (Web)**: `http://localhost:6901` (User: `mt5_user`, Pass: `password`)
     - **FastAPI Docs**: `http://localhost:8000/docs`
 
+> [!IMPORTANT]
+> **Initial Setup Required**: You MUST log in to the MetaTrader 5 terminal via the VNC interface at least once to complete the initial setup (accepting terms, choosing server, etc.) before the FastAPI service can successfully connect to the terminal.
+
 ## 📖 Documentation
 
 For production setups, please refer to the detailed guides in the `docs/` folder:
 
--   [Server Setup Guide](file:///home/ose/Documents/Quants%20Pub/metatrader-terminal/docs/server-setup.md): Preparing your Linux/EC2 instance and Nginx.
--   [CI/CD Pipeline Setup](file:///home/ose/Documents/Quants%20Pub/metatrader-terminal/docs/github-actions-setup.md): Connecting GitHub Actions for automated deployments.
+-   [Server Setup Guide](docs/server-setup.md): Preparing your Linux/EC2 instance and Nginx.
+-   [CI/CD Pipeline Setup](docs/github-actions-setup.md): Connecting GitHub Actions for automated deployments.
 
 ## 🛠️ Environment Variables
 
