@@ -47,3 +47,8 @@ jobs:
             docker compose pull
             docker compose up -d
             docker logout ghcr.io
+            echo "Pruning old Docker images and build cache..."
+            docker image prune -f --filter "until=24h"
+            docker container prune -f
+            docker builder prune -f --filter "until=24h"
+            echo "Prune complete."
