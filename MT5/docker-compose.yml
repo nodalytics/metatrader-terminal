@@ -17,3 +17,10 @@ services:
     volumes:
       - ./data:/app/data
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.8'
+          memory: 1G
+        reservations:
+          memory: 512M
