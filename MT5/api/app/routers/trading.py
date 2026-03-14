@@ -12,6 +12,10 @@ import MetaTrader5 as mt5
 
 router = APIRouter(prefix="/trading", tags=["Trading"])
 
+def error_response(detail: str):
+    code, msg = mt5.last_error()
+    return HTTPException(status_code=500, detail={"error": detail, "mt5_code": code, "mt5_msg": msg})
+
 @router.get("/", response_model=List[Trade])
 def get_trades(
     symbol: Optional[str] = None,
@@ -28,7 +32,6 @@ def get_trades(
         statement = statement.where(Trade.close_time == None)
     elif is_open is False:
         statement = statement.where(Trade.close_time != None)
-        
     return session.exec(statement).all()
 
 @router.post("/trades", response_model=Trade, status_code=status.HTTP_201_CREATED)
@@ -44,45 +47,44 @@ def send_order(
     request: MarketOrderRequest,
     session: Session = Depends(get_session)
 ):
-    result = mt5_service.send_market_order(
-        symbol=request.symbol, 
-        volume=request.volume, 
-        order_type=request.order_type, 
-        sl=request.sl, 
-        tp=request.tp,
-        deviation=request.deviation,
-        comment=request.comment,
-        magic=request.magic,
-        type_filling=request.type_filling
-    )
-    
-    # Calculate additional trade info
-    info = mt5_service.get_symbol_info(request.symbol)
-    contract_size = info.get('trade_contract_size', 100000)
-    leverage = 500 # Default or from settings
-    order_size_usd = request.volume * contract_size * result.price
-    capital_used = order_size_usd / leverage
-    commission = helpers.calculate_commission(order_size_usd, request.symbol)
-    
-    trade = crud.create_trade(
-        session=session,
-        order_result=result._asdict(),
-        symbol=request.symbol,
-        capital=capital_used,
-        position_size_usd=order_size_usd,
-        leverage=leverage,
-        commission=commission,
-        trade_type=request.order_type,
-        broker="MT5",
-        market_type="OTHER",
-        strategy="MANUAL",
-        timeframe="M1",
-        volume=request.volume,
-        sl=request.sl,
-        tp=request.tp
-    )
-    
-    return {"success": True, "trade": trade}
+    try:
+        result = mt5_service.send_market_order(
+            symbol=request.symbol, 
+            volume=request.volume, 
+            order_type=request.order_type, 
+            sl=request.sl, 
+            tp=request.tp,
+            deviation=request.deviation,
+            comment=request.comment,
+            magic=request.magic,
+            type_filling=request.type_filling
+        )
+        info = mt5_service.get_symbol_info(request.symbol)
+        contract_size = info.get('trade_contract_size', 100000)
+        leverage = 500
+        order_size_usd = request.volume * contract_size * result.price
+        capital_used = order_size_usd / leverage
+        commission = helpers.calculate_commission(order_size_usd, request.symbol)
+        trade = crud.create_trade(
+            session=session,
+            order_result=result._asdict(),
+            symbol=request.symbol,
+            capital=capital_used,
+            position_size_usd=order_size_usd,
+            leverage=leverage,
+            commission=commission,
+            trade_type=request.order_type,
+            broker="MT5",
+            market_type="OTHER",
+            strategy="MANUAL",
+            timeframe="M1",
+            volume=request.volume,
+            sl=request.sl,
+            tp=request.tp
+        )
+        return {"success": True, "trade": trade}
+    except Exception as e:
+        raise error_response(f"Error sending order: {str(e)}")
 
 @router.post("/modify-sl-tp")
 def modify_sl_tp(
@@ -93,19 +95,28 @@ def modify_sl_tp(
     trade = session.get(Trade, trade_id)
     if not trade:
         raise HTTPException(status_code=404, detail="Trade not found")
-        
-    ticket = int(trade.transaction_broker_id)
-    result = mt5_service.modify_sl_tp(ticket, request.sl, request.tp)
-    if result is None or result.retcode != 10009:
-         raise HTTPException(status_code=400, detail=f"MT5 Modify failed: {getattr(result, 'comment', 'Unknown error')}")
-    
-    # Record the mutation
-    mutation = crud.mutate_trade(
-        session=session,
-        trade_id=trade.id,
-        mutation_price=mt5_service.get_symbol_info(trade.symbol).get('bid') if mt5_service.initialize() else 0.0,
-        new_sl=request.sl,
-        new_tp=request.tp
-    )
-    
-    return {"success": True, "mutation": mutation}
+    try:
+        ticket = int(trade.transaction_broker_id)
+        result = mt5_service.modify_sl_tp(ticket, request.sl, request.tp)
+        if result is None or result.retcode != 10009:
+            raise HTTPException(status_code=400, detail=f"MT5 Modify failed: {getattr(result, 'comment', 'Unknown error')}")
+        mutation = crud.mutate_trade(
+            session=session,
+            trade_id=trade.id,
+            mutation_price=mt5_service.get_symbol_info(trade.symbol).get('bid') if mt5_service.initialize() else 0.0,
+            new_sl=request.sl,
+            new_tp=request.tp
+        )
+        return {"success": True, "mutation": mutation}
+    except Exception as e:
+        raise error_response(f"Error modifying SL/TP: {str(e)}")
+
+@router.get("/order_check/{symbol}")
+def check_order(symbol: str):
+    try:
+        info = mt5.symbol_info(symbol)
+        if not info:
+            raise HTTPException(status_code=404, detail="Symbol not found")
+        return info._asdict()
+    except Exception as e:
+        raise error_response(f"Error checking order: {str(e)}")
