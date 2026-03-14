@@ -34,10 +34,27 @@ def get_symbol_tick(symbol: str):
     except Exception as e:
         raise error_response(f"Error fetching tick: {str(e)}")
 
+
+# Support both /info/{symbol} and /info?symbol=...
+from fastapi import Query
+
 @router.get("/info/{symbol}")
-def get_symbol_info(symbol: str):
+def get_symbol_info_path(symbol: str):
     try:
-        return mt5_service.get_symbol_info(symbol)
+        info = mt5_service.get_symbol_info(symbol)
+        if not info:
+            return {"error": "Symbol not found", "symbol": symbol}
+        return info
+    except Exception as e:
+        raise error_response(f"Error fetching symbol info: {str(e)}")
+
+@router.get("/info")
+def get_symbol_info_query(symbol: str = Query(...)):
+    try:
+        info = mt5_service.get_symbol_info(symbol)
+        if not info:
+            return {"error": "Symbol not found", "symbol": symbol}
+        return info
     except Exception as e:
         raise error_response(f"Error fetching symbol info: {str(e)}")
 
