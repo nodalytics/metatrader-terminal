@@ -150,10 +150,15 @@ def test_the_terminals_refusal_reaches_the_caller(app_client, terminal, monkeypa
     """A 503 naming the reason beats a socket that closes."""
     from app.services import connector
 
+    import time as clock
+
     monkeypatch.setattr(connector.mt5_connector, "_initialized", False)
     monkeypatch.setattr(
         connector.mt5_connector, "_last_error", (-6, "Terminal: Authorization failed")
     )
+    # A refusal is only quoted back while it is fresh — see
+    # `test_a_refusal_is_not_believed_forever`.
+    monkeypatch.setattr(connector.mt5_connector, "_last_error_at", clock.monotonic())
     response = app_client.get("/api/v1/positions/")
     assert response.status_code == 503
     detail = response.json().get("detail") or response.text
@@ -203,3 +208,40 @@ def test_an_order_uses_the_resolved_filling_mode(app_client, terminal):
     assert response.status_code == 201
     sent = [c for c in terminal.calls if c[0] == "order_send"][-1][1][0]
     assert sent["type_filling"] == fake_mt5.ORDER_FILLING_FOK
+
+
+def test_a_refusal_is_not_believed_forever(monkeypatch):
+    """Otherwise fixing the login in the GUI needs a container restart to notice.
+
+    The first version of this fix latched: once a fatal error was recorded the
+    connector reported it on every request for the life of the process. That
+    replaced one unrecoverable state (a restart loop) with another (a permanent
+    refusal), and the operator's obvious next move — fixing the credentials in
+    the terminal — would have appeared to do nothing.
+    """
+    import time as clock
+
+    from app.services import connector
+    from app.utils.exceptions import MT5ConnectionError
+
+    conn = connector.MT5Connector()
+    monkeypatch.setattr(conn, "_login_ready", lambda: True)
+    conn._last_error = (-6, "Terminal: Authorization failed")
+    conn._last_error_at = clock.monotonic()
+
+    # Straight after the refusal, it is quoted back.
+    try:
+        conn.initialize()
+    except MT5ConnectionError as exc:
+        assert "Authorization failed" in str(exc)
+    else:
+        raise AssertionError("expected the refusal to be reported")
+
+    # A minute later the terminal is asked again rather than assumed broken.
+    conn._last_error_at = clock.monotonic() - connector.FATAL_RETRY_AFTER - 1
+    monkeypatch.setattr(conn, "_start_init", lambda: None)
+    try:
+        conn.initialize()
+    except MT5ConnectionError as exc:
+        assert "Authorization failed" not in str(exc)
+        assert conn._last_error is None

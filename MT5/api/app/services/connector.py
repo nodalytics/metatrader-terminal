@@ -2,6 +2,7 @@ import MetaTrader5 as mt5
 import logging
 import os
 import threading
+import time
 from app.utils.exceptions import MT5ConnectionError
 from app.utils.config import settings
 
@@ -25,6 +26,18 @@ MAX_IPC_RETRIES = 1
 #: had in fact given a precise reason. Measured against a live Deriv demo with
 #: a wrong login: MT5's own log said "authorization on Deriv-Demo failed
 #: (Invalid account)" while every HTTP call died with a reset.
+#: How long a fatal refusal is believed before the terminal is asked again.
+#:
+#: Without this the refusal latches: `_last_error` is set, `_initialized` stays
+#: False, and `initialize` reports the same failure forever — including after
+#: an operator has fixed the login in the GUI, which is exactly what they will
+#: do next. The container would then need a restart to notice it was working,
+#: which is the behaviour this whole change set out to remove.
+#:
+#: A minute is long enough that a wrong password is not retried in a hot loop,
+#: and short enough that fixing it by hand feels like it worked.
+FATAL_RETRY_AFTER = 60.0
+
 FATAL_CODES = {
     -6,  # RES_E_AUTH_FAILED — wrong login, password or server
     -8,  # RES_E_AUTO_TRADING_DISABLED
@@ -54,8 +67,9 @@ class MT5Connector:
         self._initializing = False
         self._ipc_failures = 0
         #: The terminal's own last refusal, so the API can quote it rather
-        #: than saying "still connecting" forever.
+        #: than saying "still connecting" forever, and when it was given.
         self._last_error = None
+        self._last_error_at = 0.0
         self._lock = threading.Lock()
 
     @staticmethod
@@ -110,6 +124,7 @@ class MT5Connector:
                     f"{error_msg} ({error_code})"
                 )
                 self._last_error = (error_code, error_msg)
+                self._last_error_at = time.monotonic()
 
                 if not restart_helps(error_code):
                     # A restart cannot fix a rejected login or disabled algo
@@ -167,13 +182,22 @@ class MT5Connector:
         # the caller is told "initialization started — try again shortly"
         # forever, while the actual answer ("Invalid account") sits in a log
         # file inside the container.
+        #
+        # Held for FATAL_RETRY_AFTER and then dropped, so that fixing the login
+        # in the GUI — the obvious response to this message — is noticed
+        # without a restart. Latching it permanently would have replaced one
+        # unrecoverable state with another.
         if self._last_error and not restart_helps(self._last_error[0]):
-            code, message = self._last_error
-            raise MT5ConnectionError(
-                f"MT5 refused the connection: {message} ({code}). "
-                "Check MT5_LOGIN, MT5_PASSWORD and MT5_SERVER.",
-                code=code,
-            )
+            if time.monotonic() - self._last_error_at < FATAL_RETRY_AFTER:
+                code, message = self._last_error
+                raise MT5ConnectionError(
+                    f"MT5 refused the connection: {message} ({code}). "
+                    "Check MT5_LOGIN, MT5_PASSWORD and MT5_SERVER.",
+                    code=code,
+                )
+            logger.info("Retrying the MT5 connection after an earlier refusal.")
+            self._last_error = None
+            self._ipc_failures = 0
 
         # Marker exists but not yet initialized — kick off background init
         self._start_init()
