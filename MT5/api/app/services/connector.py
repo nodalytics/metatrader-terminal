@@ -11,6 +11,32 @@ LOGIN_MARKER = "/tmp/login_complete"
 MT5_PATH = "C:\\Metatrader-5\\terminal64.exe"
 MAX_IPC_RETRIES = 1
 
+#: MT5 result codes that restarting cannot fix.
+#:
+#: The restart exists for a wedged IPC pipe, where a fresh wineserver is
+#: genuinely the cure. These are not that. `-6` is the terminal rejecting the
+#: credentials and `-8` is algo trading being switched off; both will fail
+#: exactly the same way after a restart, so exiting on them turns a
+#: configuration mistake into a restart loop.
+#:
+#: The cost of getting this wrong is not just the loop. `os._exit` kills the
+#: process mid-response, so a client asking any MT5-backed route gets
+#: "connection reset by peer" — which says nothing at all — where the terminal
+#: had in fact given a precise reason. Measured against a live Deriv demo with
+#: a wrong login: MT5's own log said "authorization on Deriv-Demo failed
+#: (Invalid account)" while every HTTP call died with a reset.
+FATAL_CODES = {
+    -6,  # RES_E_AUTH_FAILED — wrong login, password or server
+    -8,  # RES_E_AUTO_TRADING_DISABLED
+    -5,  # RES_E_INVALID_VERSION
+    -2,  # RES_E_INVALID_PARAMS
+}
+
+
+def restart_helps(error_code: int) -> bool:
+    """Whether bouncing the process could plausibly fix this failure."""
+    return int(error_code) not in FATAL_CODES
+
 
 class MT5Connector:
     """MT5 connection manager.
@@ -27,6 +53,9 @@ class MT5Connector:
         self._initialized = False
         self._initializing = False
         self._ipc_failures = 0
+        #: The terminal's own last refusal, so the API can quote it rather
+        #: than saying "still connecting" forever.
+        self._last_error = None
         self._lock = threading.Lock()
 
     @staticmethod
@@ -80,6 +109,20 @@ class MT5Connector:
                     f"MT5 initialization failed ({self._ipc_failures}/{MAX_IPC_RETRIES}): "
                     f"{error_msg} ({error_code})"
                 )
+                self._last_error = (error_code, error_msg)
+
+                if not restart_helps(error_code):
+                    # A restart cannot fix a rejected login or disabled algo
+                    # trading. Staying up means the API can answer with the
+                    # reason instead of dying mid-response and leaving the
+                    # caller with a reset socket.
+                    logger.critical(
+                        f"MT5 refused the connection: {error_msg} ({error_code}). "
+                        "Restarting cannot fix this — check MT5_LOGIN, MT5_PASSWORD "
+                        "and MT5_SERVER, and that algo trading is enabled. "
+                        "The API stays up and will report this on every request."
+                    )
+                    return
 
                 if self._ipc_failures >= MAX_IPC_RETRIES:
                     logger.critical(
@@ -118,6 +161,18 @@ class MT5Connector:
         if not self._login_ready():
             raise MT5ConnectionError(
                 "Waiting for MT5 auto-login to complete"
+            )
+
+        # A refusal the terminal has already given, quoted back. Without this
+        # the caller is told "initialization started — try again shortly"
+        # forever, while the actual answer ("Invalid account") sits in a log
+        # file inside the container.
+        if self._last_error and not restart_helps(self._last_error[0]):
+            code, message = self._last_error
+            raise MT5ConnectionError(
+                f"MT5 refused the connection: {message} ({code}). "
+                "Check MT5_LOGIN, MT5_PASSWORD and MT5_SERVER.",
+                code=code,
             )
 
         # Marker exists but not yet initialized — kick off background init

@@ -118,3 +118,44 @@ def test_an_order_returns_the_tickets_and_the_retcode(app_client, terminal):
     assert body["trade"], "the trade row serialised to nothing"
     assert body["trade"]["symbol"] == "XAUUSD"
     assert body["trade"]["transaction_broker_id"] == "98765"
+
+
+def test_a_rejected_login_does_not_restart_the_server():
+    """Found against a live Deriv demo, and it cost an hour to see.
+
+    MT5's own log said `'6258778': authorization on Deriv-Demo failed (Invalid
+    account)` — a precise, actionable answer. What the HTTP client got was
+    `connection reset by peer` on every MT5-backed route, because the connector
+    treated *any* initialisation failure as a wedged IPC pipe, called
+    `os._exit(1)` mid-response, and let supervisor restart it. Round and round,
+    with the real reason only ever written to a file inside the container.
+
+    A restart cures a broken pipe. It cannot cure a wrong password.
+    """
+    from app.services.connector import restart_helps
+
+    # Worth restarting for: the pipe really may be wedged.
+    assert restart_helps(-10005)  # RES_E_INTERNAL_FAIL_CONNECT
+    assert restart_helps(-10006)  # RES_E_INTERNAL_FAIL_TIMEOUT
+    assert restart_helps(-1)      # generic failure
+
+    # Not worth restarting for: identical outcome next time round.
+    assert not restart_helps(-6)  # authorization failed
+    assert not restart_helps(-8)  # algo trading disabled
+    assert not restart_helps(-5)  # invalid version
+    assert not restart_helps(-2)  # invalid params
+
+
+def test_the_terminals_refusal_reaches_the_caller(app_client, terminal, monkeypatch):
+    """A 503 naming the reason beats a socket that closes."""
+    from app.services import connector
+
+    monkeypatch.setattr(connector.mt5_connector, "_initialized", False)
+    monkeypatch.setattr(
+        connector.mt5_connector, "_last_error", (-6, "Terminal: Authorization failed")
+    )
+    response = app_client.get("/api/v1/positions/")
+    assert response.status_code == 503
+    detail = response.json().get("detail") or response.text
+    assert "Authorization failed" in str(detail)
+    assert "MT5_LOGIN" in str(detail)
