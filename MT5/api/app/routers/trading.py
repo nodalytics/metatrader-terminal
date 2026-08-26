@@ -59,7 +59,12 @@ def send_order(
     )
     info = mt5_service.get_symbol_info(request.symbol)
     contract_size = info.get('trade_contract_size', 100000)
-    leverage = 500
+    # The account's own leverage, not a constant. `capital` below is
+    # notional/leverage, so a hardcoded 500 misreported the money every trade
+    # tied up — by two and a half times on a 1:200 account — in the table
+    # somebody would later use to work out what a strategy cost to run.
+    account = mt5_service.get_account_info()
+    leverage = getattr(account, 'leverage', 0) or 500
     order_size_usd = request.volume * contract_size * result.price
     capital_used = order_size_usd / leverage
     commission = helpers.calculate_commission(order_size_usd, request.symbol)
@@ -80,7 +85,21 @@ def send_order(
         sl=request.sl,
         tp=request.tp
     )
-    return {"success": True, "trade": trade}
+    # `result` is the terminal's answer — ticket, retcode, fill price — and it
+    # used to be discarded, leaving a caller to infer the position it had just
+    # opened from a database row. It is the more authoritative of the two and
+    # it is what a client acts on, so it is returned alongside.
+    #
+    # `to_dict()` rather than the model or `.dict()`: this route declares no
+    # `response_model`, and a SQLModel table instance encoded without one comes
+    # back as `{}` on the versions installed here — as does `.dict()` on it —
+    # which made the whole response say nothing. `TradeBase.to_dict` reads the
+    # SQLAlchemy columns directly and is the model's own accessor.
+    return {
+        "success": True,
+        "result": result._asdict(),
+        "trade": trade.to_dict(),
+    }
 
 
 @router.post("/modify-sl-tp")

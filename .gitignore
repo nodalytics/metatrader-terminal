@@ -3,3 +3,9 @@ __pycache__/
 .env
 logs/
 *.db
+
+# Runtime artefacts: the API creates its data and log directories on import,
+# so running the tests once leaves both behind.
+MT5/api/.venv/
+MT5/api/mt5_api/
+MT5/api/logs/

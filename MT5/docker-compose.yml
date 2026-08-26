@@ -1,6 +1,16 @@
+# MetaTrader 5 is an x86-64 Windows program and Wine has no arm64 build that
+# runs one, so this image is amd64 and there is no native ARM alternative to
+# build. On an ARM host — Apple Silicon, Graviton — it runs under emulation,
+# which works and is slower.
+#
+# `platform` is pinned so that on ARM Docker pulls the amd64 image and hands it
+# to qemu, instead of failing the pull with "no matching manifest". Run
+# `./scripts/arm-preflight.sh` first; without binfmt registered the container
+# starts and dies with `exec format error`, which says nothing about the cause.
 services:
   mt5-terminal:
     image: ghcr.io/nodalytics/mt5-terminal:latest
+    platform: linux/amd64
     ports:
       - "6901:6901"
       - "8000:8000"

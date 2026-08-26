@@ -1,5 +1,8 @@
 fastapi
 uvicorn
+# uvicorn does not speak the WebSocket protocol on its own; without this
+# the /api/v1/stream handshake is refused with a 404-looking failure.
+websockets
 sqlmodel
 pandas
 numpy

@@ -228,11 +228,27 @@ class TradeService:
             raise MT5OrderError(f"Close failed: {result.comment}", code=result.retcode)
         return result
 
-    def get_positions(self, magic: int = None) -> List[Dict]:
+    def get_positions(self, magic: int = None, symbol: str = None) -> List[Dict]:
+        """Open positions, optionally only those carrying `magic`.
+
+        `positions_get` accepts `symbol`, `group` or `ticket` — **not** `magic`.
+        Passing it raises, so filtering by magic used to fail outright rather
+        than return the wrong rows, which is at least the better failure. The
+        filter is applied here instead.
+
+        That filter is what lets a bot find its own trades and leave everything
+        else alone, so it matters that it is exact: a magic of 0 is a real
+        magic (it is what a hand-placed trade carries), and `if magic` would
+        treat it as "no filter" and hand back the whole account.
+        """
         mt5_connector.initialize()
-        positions = mt5.positions_get(magic=magic) if magic else mt5.positions_get()
-        if positions is None: return []
-        return [p._asdict() for p in positions]
+        positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
+        if positions is None:
+            return []
+        rows = [p._asdict() for p in positions]
+        if magic is None:
+            return rows
+        return [row for row in rows if row.get("magic") == magic]
 
     def close_all_positions(self, order_type: str = "all", magic: Optional[int] = None, type_filling: str = 'FOK') -> List:
         mt5_connector.initialize()

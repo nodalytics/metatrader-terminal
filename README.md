@@ -27,6 +27,22 @@ This repository packages everything needed to run a reliable MT5 instance on a L
 ### Prerequisites
 - Docker and Docker Compose installed.
 - (Optional) Nginx for production routing.
+- **On ARM hosts** (Apple Silicon, AWS Graviton): amd64 emulation. Run
+  `./scripts/arm-preflight.sh` first.
+
+> [!IMPORTANT]
+> **This image is amd64, and there is no native ARM build to make.**
+> MetaTrader 5 is an x86-64 *Windows* binary, and WineHQ publishes no arm64
+> packages — so an arm64 image would need an x86 emulation layer inside it as
+> well as Wine, with no guarantee the terminal's GUI survives.
+>
+> On ARM the amd64 image runs under QEMU instead. That works, and it is slower:
+> expect the VNC desktop to feel sluggish, while the API stays responsive.
+> `docker-compose.yml` pins `platform: linux/amd64` so the pull resolves
+> instead of failing with "no matching manifest", and
+> `scripts/arm-preflight.sh` checks emulation is registered — without it the
+> container starts and dies with `exec format error`, which names neither the
+> cause nor the fix.
 
 ### Quick Start (Local)
 
@@ -127,6 +143,59 @@ All endpoints (except auth, health, and docs) require an `X-API-Key` header. Get
 | GET | `/api/v1/positions/by_symbol/{symbol}` | Positions by symbol |
 | POST | `/api/v1/positions/close` | Close position (full or partial via `volume` param) |
 | POST | `/api/v1/positions/close_all` | Close all positions |
+| POST | `/api/v1/positions/modify` | Move a stop or target, **by ticket** |
+
+> [!NOTE]
+> `GET /api/v1/positions/?magic=...` filters to positions carrying that magic
+> number, which is how a bot finds its own trades and leaves everything else
+> alone. A magic of `0` is a real value — it is what a hand-placed trade
+> carries — and is filtered for, not treated as "no filter".
+>
+> `POST /positions/modify` takes the MT5 ticket. The older
+> `/trading/modify-sl-tp` takes a `trade_id` from this service's own database
+> and so cannot touch a position it did not record; it remains for callers
+> already using it.
+
+### Streaming
+
+| Protocol | Endpoint | Description |
+| :--- | :--- | :--- |
+| WS | `/api/v1/stream` | Quotes, positions and account, pushed as they change |
+
+```bash
+wscat -c "ws://localhost:8000/api/v1/stream?api_key=KEY&symbols=XAUUSD,BTCUSD&magic=777701"
+```
+
+```jsonc
+<- {"type": "ready",  "symbols": ["BTCUSD", "XAUUSD"], "interval": 0.25}
+<- {"type": "tick",   "symbol": "XAUUSD", "bid": 4400.0, "ask": 4400.5, ...}
+<- {"type": "positions", "positions": [ ... ]}
+<- {"type": "account",   "equity": 10002.5, "balance": 10000.0, ...}
+
+-> {"action": "subscribe",   "symbols": ["EURUSD"]}
+-> {"action": "unsubscribe", "symbols": ["BTCUSD"]}
+-> {"action": "ping"}
+```
+
+**Why it exists.** REST is the wrong shape for a price feed: a client learns
+things at the rate it asks rather than the rate they change, is blind between
+polls, and spends most round trips discovering nothing has moved.
+
+MT5 has no push API — `symbol_info_tick` is a question, not a subscription — so
+this still polls. What changes is that *one* loop inside the process already
+holding the terminal connection does it, and **only differences are sent**. A
+quiet symbol costs nothing; a busy one arrives as fast as it moves. Positions
+and the account are polled on a slower loop and sent when the set changes,
+which is what makes a server-side stop-out visible: it produces no message
+anywhere, the position simply stops being there.
+
+Floating profit is deliberately excluded from the change comparison. It moves
+on every tick, and including it would turn the slow loop into a second quote
+feed.
+
+Authentication takes the same key as the REST routes, from the `X-API-Key`
+header or the `api_key` query parameter — the query form because browsers
+cannot set headers on a WebSocket handshake.
 
 ### History
 | Method | Endpoint | Description |
@@ -189,6 +258,28 @@ The project uses the following key variables in your `.env`:
 | `MT5_SERVER` | Your broker's server name (e.g. `Deriv-Demo`) | - |
 | `MT5_API_PORT` | Port for the FastAPI service | `8000` |
 | `API_KEY_SEED` | Seed for API key authentication | - |
+
+## 🧪 Tests
+
+```bash
+cd MT5/api
+pip install -r requirements.txt
+python -m pytest tests/unit -q      # no container, no Wine, no broker
+python -m pytest tests -q           # integration; needs a running container
+```
+
+`tests/unit` runs the **real** application against a fake `MetaTrader5` module
+installed into `sys.modules` before `app` is imported. Only the terminal is
+replaced, so what is under test is the actual routing, serialisation and
+argument passing.
+
+That matters because the fake is **strict where the real package is strict**.
+`positions_get` there refuses a `magic=` keyword exactly as MetaTrader's does,
+which is what caught the position filter passing one. A permissive mock would
+have accepted it and the tests would have passed while the endpoint failed.
+
+`tests/` remains integration tests against a live container, for anything that
+needs a real market.
 
 ## 🤝 Contributing
 

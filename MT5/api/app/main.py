@@ -10,7 +10,7 @@ except ImportError:
 from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from app.routers import trading, auth, account, positions, symbols, history, terminal, orders
+from app.routers import trading, auth, account, positions, symbols, history, terminal, orders, stream
 from app.dependencies.auth import verify_api_key
 from app.db.database import init_db
 from app.utils.config import settings
@@ -139,6 +139,11 @@ def create_app() -> FastAPI:
         prefix="/api/v1", 
         dependencies=[Depends(verify_api_key)]
     )
+    # The stream authenticates itself. `verify_api_key` is an HTTP dependency
+    # and cannot run on a WebSocket handshake — a browser cannot set the header
+    # it reads either, so the socket takes the key from the query string as
+    # well. See `stream._authorised`.
+    app.include_router(stream.router, prefix="/api/v1")
 
     @app.api_route("/", methods=["GET", "HEAD"], tags=["System"])
     def read_root():

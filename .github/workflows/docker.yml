@@ -16,10 +16,44 @@ env:
 
 jobs:
   # ----------------------------------------------------------------
+  # Job 0: The API's own tests
+  # ----------------------------------------------------------------
+  # These run against a fake MetaTrader5 module installed into sys.modules,
+  # so they need no container, no Wine and no broker — see
+  # MT5/api/tests/unit/fake_mt5.py. Until they existed the only check on this
+  # repository was "does the image start", which cannot catch a route passing
+  # an argument the terminal does not accept.
+  #
+  # They run first and gate the build: there is no point pushing an image whose
+  # API is known to be broken.
+  unit:
+    name: API unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install
+        working-directory: MT5/api
+        run: |
+          python -m pip install --upgrade pip
+          # MetaTrader5 itself is win32-only and is not installed; the fake
+          # stands in for it.
+          pip install -r requirements.txt
+
+      - name: Test
+        working-directory: MT5/api
+        run: python -m pytest tests/unit -q
+
+  # ----------------------------------------------------------------
   # Job 1: Build, Test & Push
   # ----------------------------------------------------------------
   build:
     name: Build, Test & Push
+    needs: unit
     runs-on: ubuntu-latest
     permissions:
       contents: read

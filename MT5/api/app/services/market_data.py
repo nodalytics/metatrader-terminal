@@ -49,11 +49,18 @@ class MarketDataService:
         mt5_connector.initialize()
         return mt5.symbol_select(symbol, True)
 
-    def get_symbol_info_tick(self, symbol: str) -> Dict:
+    def get_symbol_info_tick(self, symbol: str, use_cache: bool = True) -> Dict:
+        """The latest quote. `use_cache=False` for anything streaming.
+
+        The cache holds a tick for a second, which is right for a REST caller
+        polling and wrong for a stream: a socket sampling four times a second
+        would send the same cached tick four times and miss three real ones.
+        """
         cache_key = f"symbol_tick_{symbol}"
-        cached_tick = cache_manager.get(cache_key)
-        if cached_tick:
-            return cached_tick
+        if use_cache:
+            cached_tick = cache_manager.get(cache_key)
+            if cached_tick:
+                return cached_tick
 
         mt5_connector.initialize()
         mt5.symbol_select(symbol, True)
