@@ -1,61 +1,110 @@
-# name: Remote SSH Deploy
+# Pull the published image onto the box and restart it.
+#
+# This file used to be commented out from the first line to the last. GitHub
+# still parses it, finds no `on:` and no `jobs:`, and fails the run — so every
+# push showed a red Deploy that was not a deploy failing but a file that could
+# not be read. Being valid is the fix; what it does when run is below.
+name: Remote SSH Deploy
 
-# on:
+# **Manual on purpose.** The commented version triggered on every successful
+# build of `main`, but it had never run, so switching it on here would have
+# turned "make the file valid" into "start deploying to production on every
+# merge" — a much larger change than the one being asked for.
+#
+# To make it automatic, replace `workflow_dispatch` with:
+#
 #   workflow_run:
 #     workflows: ["Docker Build & Test"]
-#     types:
-#       - completed
-#     branches:
-#       - main
+#     types: [completed]
+#     branches: [main]
+#
+# and gate the job on `github.event.workflow_run.conclusion == 'success'`.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to deploy"
+        required: false
+        default: "latest"
 
-# jobs:
-#   deploy:
-#     name: Deploy to EC2
-#     runs-on: ubuntu-latest
-#     if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    
-#     steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v4
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
 
-#       - name: Debug - List files
-#         run: ls -R
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-#       - name: Copy deployment files via SCP
-#         uses: appleboy/scp-action@v0.1.7
-#         with:
-#           host: ${{ secrets.SSH_HOST }}
-#           username: ${{ secrets.SSH_USER }}
-#           key: ${{ secrets.SSH_KEY }}
-#           source: "MT5/docker-compose.yml,MT5/.env.example,nginx/"
-#           target: ${{ secrets.DEPLOY_PATH }}
-#           strip_components: 1
+      - name: Copy deployment files via SCP
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          source: "MT5/docker-compose.yml,MT5/.env.example,nginx/"
+          target: ${{ secrets.DEPLOY_PATH }}
+          strip_components: 1
 
-#       - name: Deploy services and update server config
-#         uses: appleboy/ssh-action@v1.0.3
-#         with:
-#           host: ${{ secrets.SSH_HOST }}
-#           username: ${{ secrets.SSH_USER }}
-#           key: ${{ secrets.SSH_KEY }}
-#           script: |
-#             set -e
-            
-#             echo "Moving to deployment path..."
-#             cd ${{ secrets.DEPLOY_PATH }}
+      - name: Deploy services and update server config
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          envs: TAG
+          script: |
+            set -euo pipefail
+            cd ${{ secrets.DEPLOY_PATH }}
 
-#             # ── Environment files (force refresh from templates) ───────────
-#             cp .env.example .env
-#             echo "Successfully refreshed environment files from templates"
+            # ── Environment ───────────────────────────────────────────────
+            # Seeded only when absent. The previous version ran
+            # `cp .env.example .env` unconditionally, which on every deploy
+            # would have overwritten the live file — MT5 login, password,
+            # server and API_KEY_SEED — with the template's placeholders. The
+            # container would then come up and fail to log in, and the cause
+            # would be a deploy that reported success.
+            if [ ! -f .env ]; then
+              cp .env.example .env
+              echo "seeded .env from the template — it needs real credentials"
+            else
+              echo ".env exists; left alone"
+            fi
 
-#             # ── Pull and restart containers ────────────────────────────────
-#             echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-#             docker compose pull
-#             docker compose up -d
-#             docker logout ghcr.io
+            # ── Pull and restart ──────────────────────────────────────────
+            echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker compose pull
+            docker compose up -d
+            docker logout ghcr.io
 
-#             # ── Cleanup ────────────────────────────────────────────────────
-#             echo "Pruning old Docker images and build cache..."
-#             docker system prune -af --volumes
-#             docker image prune -f
-#             docker builder prune -f --filter "until=48h"
-#             echo "Deploy complete."
+            # ── Cleanup ───────────────────────────────────────────────────
+            # `--volumes` is deliberately absent. `docker system prune -af
+            # --volumes` removes every volume not currently attached to a
+            # running container, which on a box mid-restart is a good way to
+            # delete the terminal's own state along with the rubbish.
+            echo "Pruning unused images and build cache..."
+            docker image prune -af
+            docker builder prune -f --filter "until=48h"
+
+      - name: Prove it came back up
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd ${{ secrets.DEPLOY_PATH }}
+            # A deploy that reports success without checking is a deploy that
+            # reports success while the container restart-loops.
+            sleep 20
+            if ! docker compose ps --status running | grep -q mt5-terminal; then
+              docker compose logs --tail 50
+              exit 1
+            fi
+            echo "✅ mt5-terminal is running"
