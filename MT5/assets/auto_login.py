@@ -167,15 +167,85 @@ class VNClient:
         self.client.keyPress('enter')
         time.sleep(5)
 
-    def enable_algo_trading(self):
-        """
-        Enables algorithmic trading on the MetaTrader 5 platform
-        using the Ctrl+E keyboard shortcut.
-        """
+    def toggle_algo_trading(self):
+        """Press Ctrl+E once. This is a **toggle**, not a switch."""
         self.client.keyDown('ctrl')
         self.client.keyPress('e')
         self.client.keyUp('ctrl')
         time.sleep(0.2)
+
+    def enable_algo_trading(self, attempts: int = 3):
+        """Leave algorithmic trading ON, whatever state it started in.
+
+        Ctrl+E toggles. The previous version pressed it once and assumed the
+        result, which is right exactly half the time: on a restart where MT5
+        had restored AutoTrading as enabled, this script switched it **off**,
+        and every order was then refused with `AutoTrading disabled by client`
+        (10027) — an error naming the client that sent the order rather than
+        the terminal that refused it.
+
+        There is no GUI state to read back, so the terminal's own log is the
+        authority. The subtlety is that the log is written **asynchronously**:
+        a first attempt at this slept two seconds after toggling, read a line
+        that had not been updated yet, believed AutoTrading was still off, and
+        toggled a second time — on at 07:18:07, off again at 07:18:10.
+
+        So the wait is for *evidence*, not for a duration. Count the transition
+        lines before pressing, then wait for that count to rise. A new line is
+        proof the terminal has acted; a timer is only a guess that it has.
+        """
+        for attempt in range(1, attempts + 1):
+            count, state = self.algo_trading_log()
+            if state is True:
+                print(f"Algo trading is enabled (confirmed on attempt {attempt}).")
+                return True
+
+            print(f"Algo trading reads {state!r}; toggling (attempt {attempt}).")
+            self.toggle_algo_trading()
+
+            for _ in range(30):  # up to ~15s for the terminal to write it down
+                time.sleep(0.5)
+                fresh_count, fresh_state = self.algo_trading_log()
+                if fresh_count > count:
+                    state = fresh_state
+                    break
+            if state is True:
+                print(f"Algo trading is enabled (confirmed on attempt {attempt}).")
+                return True
+
+        print("WARNING: could not confirm algo trading is enabled — orders will "
+              "be refused with 'AutoTrading disabled by client' (10027).")
+        return False
+
+    @staticmethod
+    def algo_trading_log():
+        """(transitions logged, current state) from the terminal's own log.
+
+        The count is what makes waiting reliable: it says whether the terminal
+        has written anything *new*, which a timer cannot. State is True, False,
+        or None when the terminal has not said either way yet.
+        """
+        import glob
+
+        logs = sorted(
+            glob.glob('/opt/wineprefix/drive_c/Metatrader-5/logs/*.log'),
+            key=os.path.getmtime,
+        )
+        if not logs:
+            return 0, None
+        try:
+            with open(logs[-1], 'rb') as handle:
+                text = handle.read().decode('utf-16-le', errors='ignore')
+        except OSError:
+            return 0, None
+
+        count, state = 0, None
+        for line in text.splitlines():
+            if 'automated trading is enabled' in line:
+                count, state = count + 1, True
+            elif 'automated trading is disabled' in line:
+                count, state = count + 1, False
+        return count, state
 
     def open_journal_tab(self):
         """

@@ -7,6 +7,49 @@ from app.utils.exceptions import MT5OrderError, MT5SymbolNotFoundError
 
 logger = logging.getLogger(__name__)
 
+#: Which fill policies a symbol permits, as MT5 reports them. The mask uses
+#: SYMBOL_FILLING_* flags (FOK=1, IOC=2, BOC=4) while an order takes
+#: ORDER_FILLING_* constants (FOK=0, IOC=1, RETURN=2) — one off from each
+#: other, so they are mapped rather than reused.
+def resolve_filling(requested: str, mask: int) -> int:
+    """The fill policy to send: the one asked for if the symbol allows it.
+
+    Brokers differ on this and the difference is not documented anywhere the
+    caller can see. Sending a policy the symbol does not permit is refused with
+    `Unsupported filling mode` (10030) — a failure that reads like a bad order
+    and is really a bad constant.
+
+    Measured against Deriv: every symbol checked — BTCUSD, XAUUSD, EURUSD —
+    reports `filling_mode=1`, meaning **FOK only**. A caller sending the
+    otherwise-reasonable IOC had every order rejected, and the message named
+    the filling mode without saying which ones were available.
+
+    So the symbol's own mask is the authority and the request is a preference.
+    A mask of 0 means the terminal did not say, in which case the request is
+    honoured unchanged rather than second-guessed.
+    """
+    wanted = {
+        "IOC": mt5.ORDER_FILLING_IOC,
+        "FOK": mt5.ORDER_FILLING_FOK,
+        "RETURN": mt5.ORDER_FILLING_RETURN,
+    }.get((requested or "").upper(), mt5.ORDER_FILLING_FOK)
+
+    mask = int(mask or 0)
+    if not mask:
+        return wanted
+
+    allows_fok, allows_ioc = bool(mask & 1), bool(mask & 2)
+    if wanted == mt5.ORDER_FILLING_FOK and allows_fok:
+        return mt5.ORDER_FILLING_FOK
+    if wanted == mt5.ORDER_FILLING_IOC and allows_ioc:
+        return mt5.ORDER_FILLING_IOC
+    if allows_fok:
+        return mt5.ORDER_FILLING_FOK
+    if allows_ioc:
+        return mt5.ORDER_FILLING_IOC
+    return mt5.ORDER_FILLING_RETURN
+
+
 class TradeService:
     def send_market_order(self, symbol: str, volume: float, order_type: str, sl: float, tp: float = None,
                           deviation: int = 20, comment: str = '', magic: int = 0, type_filling: str = 'FOK'):
@@ -27,6 +70,9 @@ class TradeService:
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
             raise MT5SymbolNotFoundError(f"Failed to get tick for {symbol}")
+
+        info = mt5.symbol_info(symbol)
+        filling = resolve_filling(type_filling, getattr(info, "filling_mode", 0) if info else 0)
             
         # Correctly mapping price for long/short
         price = tick.ask if order_type.upper() == 'BUY' else tick.bid
@@ -42,7 +88,7 @@ class TradeService:
             "magic": int(magic),
             "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": filling_map.get(type_filling.upper(), mt5.ORDER_FILLING_FOK),
+            "type_filling": filling,
         }
         
         if tp is not None:
@@ -97,7 +143,9 @@ class TradeService:
             "magic": int(magic),
             "comment": comment,
             "type_time": time_map.get(type_time.upper(), mt5.ORDER_TIME_GTC),
-            "type_filling": filling_map.get(type_filling.upper(), mt5.ORDER_FILLING_FOK),
+            "type_filling": resolve_filling(
+                type_filling, getattr(mt5.symbol_info(symbol), "filling_mode", 0)
+            ),
         }
 
         if sl is not None:
@@ -220,7 +268,12 @@ class TradeService:
             "magic": pos.magic,
             "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": filling_map.get(type_filling.upper(), mt5.ORDER_FILLING_FOK),
+            # Same authority as opening. A close refused for an unsupported
+            # filling mode leaves the position open, which is the worse half of
+            # the bug — the account is exposed and the caller was told no.
+            "type_filling": resolve_filling(
+                type_filling, getattr(mt5.symbol_info(pos.symbol), "filling_mode", 0)
+            ),
         }
 
         result = mt5.order_send(request)

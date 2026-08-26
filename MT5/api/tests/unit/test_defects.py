@@ -159,3 +159,47 @@ def test_the_terminals_refusal_reaches_the_caller(app_client, terminal, monkeypa
     detail = response.json().get("detail") or response.text
     assert "Authorization failed" in str(detail)
     assert "MT5_LOGIN" in str(detail)
+
+
+def test_the_filling_mode_comes_from_the_symbol_not_the_caller():
+    """Deriv allows FOK only, and a caller asking for IOC had every order refused.
+
+    `Unsupported filling mode` (10030) reads like a bad order and is really a
+    bad constant. Measured against a live Deriv demo: BTCUSD, XAUUSD and EURUSD
+    all report `filling_mode=1` — FOK only — while the obvious default to send
+    is IOC.
+    """
+    from app.services.trade import resolve_filling
+
+    FOK, IOC, RETURN = fake_mt5.ORDER_FILLING_FOK, fake_mt5.ORDER_FILLING_IOC, fake_mt5.ORDER_FILLING_RETURN
+
+    # FOK-only, as Deriv reports: the request is overridden.
+    assert resolve_filling("IOC", 1) == FOK
+    assert resolve_filling("FOK", 1) == FOK
+
+    # IOC-only: likewise the other way.
+    assert resolve_filling("FOK", 2) == IOC
+    assert resolve_filling("IOC", 2) == IOC
+
+    # Both allowed: the request is honoured.
+    assert resolve_filling("IOC", 3) == IOC
+    assert resolve_filling("FOK", 3) == FOK
+
+    # Neither flagged: RETURN is the only thing left to try.
+    assert resolve_filling("IOC", 4) == RETURN
+
+    # The terminal said nothing, so do not second-guess the caller.
+    assert resolve_filling("IOC", 0) == IOC
+
+
+def test_an_order_uses_the_resolved_filling_mode(app_client, terminal):
+    """End to end: the request that reaches the terminal carries FOK."""
+    terminal.symbols["XAUUSD"] = fake_mt5.symbol("XAUUSD", filling_mode=1)
+    response = app_client.post(
+        "/api/v1/trading/order",
+        json={"symbol": "XAUUSD", "volume": 0.01, "order_type": "BUY",
+              "sl": 4395.0, "type_filling": "IOC"},
+    )
+    assert response.status_code == 201
+    sent = [c for c in terminal.calls if c[0] == "order_send"][-1][1][0]
+    assert sent["type_filling"] == fake_mt5.ORDER_FILLING_FOK
