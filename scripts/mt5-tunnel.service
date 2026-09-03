@@ -1,0 +1,22 @@
+# Keep the reverse tunnel up. Install with scripts/install-tunnel.sh.
+#
+# `Restart=always` with a delay rather than a retry loop inside the script:
+# systemd already knows how to back off, and a script that supervises itself is
+# a second supervisor to keep in step with the first.
+[Unit]
+Description=Reverse SSH tunnel exposing the MT5 API to the trading box
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/mt5-tunnel.env
+ExecStart=/usr/local/bin/mt5-reverse-tunnel.sh
+Restart=always
+RestartSec=10
+# ExitOnForwardFailure makes a lost port a non-zero exit rather than a tunnel
+# that is up and forwarding nothing, so restarting on failure is meaningful.
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target

@@ -11,6 +11,38 @@ This repository packages everything needed to run a reliable MT5 instance on a L
 -   **Nginx Proxy**: Pre-configured proxy settings for handling SSL, WebSockets, and subdomain routing.
 -   **CI/CD**: GitHub Actions workflows for automated Docker builds and remote EC2 deployment.
 
+## 🔌 Reaching the terminal from a remote trading box
+
+The trading service runs in Docker on another instance and reaches this
+terminal at `host.docker.internal:8000`. **Nothing on that instance listens on
+8000** — the port is held open from *this* side by a reverse SSH tunnel, and
+the container can see it because the forward is bound to the Docker bridge
+address rather than to loopback:
+
+```
+this host :8000  --ssh-->  remote 172.17.0.1:8000  -->  container
+```
+
+`scripts/reverse-tunnel.sh` holds the tunnel, `scripts/mt5-tunnel.service`
+keeps it up, and `scripts/install-tunnel.sh` installs both:
+
+```bash
+sudo REMOTE=ubuntu@1.2.3.4 KEY=/home/mt5/.ssh/id_ed25519 ./scripts/install-tunnel.sh
+```
+
+Two things that are easy to get wrong and hard to see afterwards:
+
+- **The remote sshd must allow a non-loopback forward**, which is off by
+  default. Use `GatewayPorts clientspecified` — it permits exactly the bind
+  address the client asks for. `yes` binds every forward to all interfaces,
+  which on a public instance means an open port to a trading terminal. Without
+  it the forward silently falls back to loopback and the container sees
+  nothing, which looks like a broken bridge rather than a misconfigured sshd.
+- **Verify from the remote, not from here.** A tunnel bound to the wrong
+  address is indistinguishable from a working one on this side. On the remote,
+  `ss -tlnp | grep 8000` should show an `ssh` process on the bridge address —
+  and `curl 127.0.0.1:8000` answering nothing there is *correct*.
+
 ## 📁 Repository Structure
 
 ```text
