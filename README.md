@@ -8,6 +8,7 @@ This repository packages everything needed to run a reliable MT5 instance on a L
 
 -   **MT5 Terminal (Docker)**: A Wine-based container running the MetaTrader 5 desktop client, accessible via VNC (web and client).
 -   **FastAPI Service**: A modern, high-performance API for interacting with the MT5 terminal programmatically.
+-   **WebSocket Stream**: `/api/v1/stream` pushes quotes, positions and account state **as they change**, so a client is not blind between polls. MT5 has no push API, so one loop inside the process that already holds the terminal connection does the polling and sends only differences. See [Streaming](#streaming).
 -   **Nginx Proxy**: Pre-configured proxy settings for handling SSL, WebSockets, and subdomain routing.
 -   **CI/CD**: GitHub Actions workflows for automated Docker builds and remote EC2 deployment.
 
@@ -193,6 +194,26 @@ All endpoints (except auth, health, and docs) require an `X-API-Key` header. Get
 | Protocol | Endpoint | Description |
 | :--- | :--- | :--- |
 | WS | `/api/v1/stream` | Quotes, positions and account, pushed as they change |
+
+**The URL depends on how you are reaching the terminal**, and the three forms
+are not interchangeable:
+
+| From | URL |
+| :--- | :--- |
+| the same host | `ws://localhost:8000/api/v1/stream` |
+| through the Nginx proxy | `wss://mt5-api.yourdomain/api/v1/stream` |
+| a remote box over the reverse tunnel | `ws://host.docker.internal:8000/api/v1/stream` |
+
+The proxy form is `wss://`, not `ws://` — `snippets/proxy_params.conf` already
+carries the `Upgrade` and `Connection` headers the handshake needs, so the
+socket works over TLS with no extra configuration. The tunnel form is the one a
+trading service on another instance uses; nothing on that instance listens on
+8000, and [the section above](#-reaching-the-terminal-from-a-remote-trading-box)
+explains why it still resolves.
+
+Query parameters, all optional except the key: `api_key`, `symbols` (comma
+separated), `magic` to filter positions to one bot's trades, and `interval` for
+the quote loop in seconds.
 
 ```bash
 wscat -c "ws://localhost:8000/api/v1/stream?api_key=KEY&symbols=XAUUSD,BTCUSD&magic=777701"
