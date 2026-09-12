@@ -44,8 +44,19 @@ ENV MT5_LOGIN=0 \
 # exit 100 and breaks the `&&` chain before install is even reached. The
 # packages themselves are all in `main`, which is why this works.
 #
-# `Check-Valid-Until false` because an archived Release file is past its expiry
-# by definition and apt refuses it otherwise.
+# `Check-Valid-Until=false` because an archived Release file is past its expiry
+# by definition and apt refuses it otherwise. **Passed to this one command, not
+# written into `apt.conf.d`.** A file there is permanent: every later `apt-get`
+# in this image, and every one a future layer adds, would silently accept a
+# stale index - which is a security option with a much wider scope than the
+# problem that needed it.
+#
+# **http, and that is not the weak part.** apt verifies every package against a
+# GPG-signed `Release`, so the integrity guarantee comes from the signature
+# chain rather than the transport; plain http is what Debian's own default
+# `sources.list` ships. https would add confidentiality about *which* packages
+# are fetched, and this base image has no CA certificates, so requiring it would
+# trade a real build for a marginal gain.
 #
 # **This pins the image to unpatched packages**, which is the real cost of an
 # EOL base and the reason the note below is not decoration.
@@ -53,9 +64,7 @@ ENV MT5_LOGIN=0 \
 # The real fix is a base image that is not EOL. This keeps the build green until
 # that move is made deliberately rather than under a deadline.
 RUN echo 'deb http://archive.debian.org/debian bullseye main' > /etc/apt/sources.list && \
-    printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99-archive && \
-    printf 'Acquire::Retries "3";\n' > /etc/apt/apt.conf.d/99-retries && \
-    apt-get update && \
+    apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3 update && \
     apt-get install -y --no-install-recommends \
     openbox \
     tigervnc-standalone-server \
