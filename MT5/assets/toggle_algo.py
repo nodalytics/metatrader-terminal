@@ -54,9 +54,13 @@ def press() -> None:
     """Ctrl+E into the VNC session, which is the only way to reach the toggle."""
     from vncdotool import api
 
+    # The same two variables `auto_login.py` reads, and the same defaults. A
+    # bare host means port 5900 to vncdotool; spelling it `localhost::5901`
+    # here - which an earlier version of this file did - connects to nothing
+    # and fails with a refusal that names the wrong problem.
     client = api.connect(
-        os.environ.get("VNC_SERVER_URL", "localhost::5901"),
-        password=os.environ.get("VNC_SERVER_PASSWORD") or os.environ.get("VNC_PASSWORD"),
+        os.environ.get("VNC_SERVER_HOST", "localhost"),
+        password=os.environ.get("VNC_PASSWORD"),
     )
     try:
         client.keyDown("ctrl")
