@@ -29,8 +29,33 @@ ENV MT5_LOGIN=0 \
     VNC_USER=mt5_user \
     VNC_PASSWORD=password
 
-# Install system dependencies and clean up in a single layer
-RUN apt-get update && \
+# **Debian 11 is end-of-life, so the mirror no longer holds its packages.**
+#
+# `tobix/pywine:3.9` is built on bullseye, whose support ended in 2026 and whose
+# archive has moved to `archive.debian.org`. The CDN at `deb.debian.org` still
+# answers for the *index* - so `apt-get update` succeeds - and then **404s on the
+# .deb files themselves**, which surfaces as `apt-get install` exiting 100 with
+# no package named in the error. That is why this layer built on 2026-09-11 and
+# failed on 2026-09-12 with the Dockerfile untouched.
+#
+# Pointing at the archive is the standard remedy, and it is **main alone**.
+# Neither `bullseye-updates` nor a security suite exists there - both spellings
+# were tried and both 404 on their Release file, which makes `apt-get update`
+# exit 100 and breaks the `&&` chain before install is even reached. The
+# packages themselves are all in `main`, which is why this works.
+#
+# `Check-Valid-Until false` because an archived Release file is past its expiry
+# by definition and apt refuses it otherwise.
+#
+# **This pins the image to unpatched packages**, which is the real cost of an
+# EOL base and the reason the note below is not decoration.
+#
+# The real fix is a base image that is not EOL. This keeps the build green until
+# that move is made deliberately rather than under a deadline.
+RUN echo 'deb http://archive.debian.org/debian bullseye main' > /etc/apt/sources.list && \
+    printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99-archive && \
+    printf 'Acquire::Retries "3";\n' > /etc/apt/apt.conf.d/99-retries && \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
     openbox \
     tigervnc-standalone-server \
