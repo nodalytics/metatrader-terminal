@@ -195,19 +195,35 @@ class VNClient:
         proof the terminal has acted; a timer is only a guess that it has.
         """
         for attempt in range(1, attempts + 1):
-            count, state = self.algo_trading_log()
+            state = self.algo_trading_state()
             if state is True:
                 print(f"Algo trading is enabled (confirmed on attempt {attempt}).")
                 return True
 
-            print(f"Algo trading reads {state!r}; toggling (attempt {attempt}).")
+            # **Never toggle on an unknown state.** Ctrl+E is a toggle, so
+            # pressing it without knowing where you are is a coin flip - and
+            # pressing it three times, which is what this loop used to do when
+            # the log said nothing, guarantees a net change from wherever you
+            # started. On 2026-09-12 that is exactly what happened: the terminal
+            # was in a restart loop, so the Ctrl+E never reached a window that
+            # lived long enough to log anything, the state read `None` three
+            # times, and the routine toggled three times and gave up. Every
+            # order for the next nine hours was refused.
+            #
+            # An unknown state is a reason to stop and say so, not to guess.
+            if state is None:
+                print(f"Cannot read algo trading state (attempt {attempt}); not toggling.")
+                time.sleep(2)
+                continue
+
+            print("Algo trading is off; toggling.")
             self.toggle_algo_trading()
 
-            for _ in range(30):  # up to ~15s for the terminal to write it down
+            for _ in range(30):  # up to ~15s for the terminal to act on it
                 time.sleep(0.5)
-                fresh_count, fresh_state = self.algo_trading_log()
-                if fresh_count > count:
-                    state = fresh_state
+                fresh = self.algo_trading_state()
+                if fresh is not None:
+                    state = fresh
                     break
             if state is True:
                 print(f"Algo trading is enabled (confirmed on attempt {attempt}).")
@@ -216,6 +232,32 @@ class VNClient:
         print("WARNING: could not confirm algo trading is enabled — orders will "
               "be refused with 'AutoTrading disabled by client' (10027).")
         return False
+
+    @staticmethod
+    def algo_trading_state():
+        """True, False, or None - **from the terminal, not from its log.**
+
+        `terminal_info().trade_allowed` is what the terminal will actually
+        answer an order with, which makes it the only reading worth acting on.
+        The log was the previous authority and it failed silently twice over: it
+        records a *transition*, so a terminal that has never toggled says
+        nothing at all, and on 2026-09-12 the file held **20,998 lines with not
+        one mention of trading** while AutoTrading was off and 171 orders were
+        being rejected.
+
+        Falls back to the log only when MT5 cannot be reached, because a
+        transition that was recorded is still evidence - just weaker, and
+        never conclusive about a terminal that has been quiet.
+        """
+        try:
+            import MetaTrader5 as mt5  # noqa: PLC0415 - optional at import time
+
+            info = mt5.terminal_info()
+            if info is not None and getattr(info, "trade_allowed", None) is not None:
+                return bool(info.trade_allowed)
+        except Exception:
+            pass
+        return VNClient.algo_trading_log()[1]
 
     @staticmethod
     def algo_trading_log():

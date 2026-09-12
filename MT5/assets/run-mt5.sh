@@ -51,10 +51,45 @@ fi
 # needs the terminal open to enter login details via VNC.
 LOGIN_MARKER="/tmp/login_complete"
 
+# Is a terminal already up? MT5 refuses a second instance on the same portable
+# data directory and **exits 0 immediately** when it finds one - which is
+# indistinguishable, to the loop below, from a clean shutdown.
+#
+# That cost a day of trading. On 2026-09-11 one launch exited before login, the
+# loop relaunched into an instance that was still alive, and every relaunch from
+# then on exited 0 at once: **11,945 restarts over eighteen hours**, about
+# eleven a minute. The terminal itself was fine the whole time - one process,
+# PID 240, serving quotes - but the GUI the VNC auto-login types into was
+# replaced every five seconds, so Ctrl+E never landed, AutoTrading stayed off,
+# and **171 orders were rejected with nothing filled**.
+#
+# `pgrep -f` rather than a PID file: a PID file records what this script
+# started, and the process that matters may have been started by a previous
+# incarnation of it.
+terminal_running() {
+    pgrep -f 'terminal64.exe' >/dev/null 2>&1
+}
+
 while true; do
+    if terminal_running; then
+        # Do not launch a second one. Wait for the one that exists to go away,
+        # which is the only event that should cause a launch.
+        sleep 5
+        continue
+    fi
+
     echo "Launching MetaTrader 5..."
     wine /opt/wineprefix/drive_c/Metatrader-5/terminal64.exe /portable
     EXIT_CODE=$?
+
+    # A launch that returns in under a few seconds did not run a terminal - it
+    # found one. Said out loud, because a silent fast loop is what made the
+    # original fault invisible in a log nobody reads at eleven lines a minute.
+    if terminal_running; then
+        echo "MT5 exited (code $EXIT_CODE) but a terminal is still running — not relaunching."
+        sleep 5
+        continue
+    fi
 
     # If auto-login has completed and MT5 exits, it's a real crash — still restart
     if [ -f "$LOGIN_MARKER" ]; then

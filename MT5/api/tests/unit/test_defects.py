@@ -245,3 +245,67 @@ def test_a_refusal_is_not_believed_forever(monkeypatch):
     except MT5ConnectionError as exc:
         assert "Authorization failed" not in str(exc)
         assert conn._last_error is None
+
+
+# --------------------------------------------- the 2026-09-12 nine-hour outage
+
+
+def test_an_unknown_algo_state_is_never_toggled_on():
+    """Ctrl+E is a toggle, so pressing it without knowing the state is a coin
+    flip - and pressing it three times, which the loop used to do whenever the
+    log said nothing, guarantees a net change from wherever you started.
+
+    On 2026-09-12 the terminal was in a restart loop, so Ctrl+E never reached a
+    window that lived long enough to log anything. The state read `None` three
+    times, the routine toggled three times, and every order for the next nine
+    hours was refused with `AutoTrading disabled by client`.
+    """
+    import sys
+    import types
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[3] / "assets" / "auto_login.py"
+    text = source.read_text()
+
+    # The guard, as source: an unknown state must reach `continue`, not a toggle.
+    body = text.split("def enable_algo_trading")[1].split("\n    @staticmethod")[0]
+    assert "if state is None:" in body, "unknown state must be handled explicitly"
+    unknown = body.split("if state is None:")[1].split("print(")[0]
+    assert "toggle_algo_trading" not in body.split("if state is None:")[1].split("continue")[0], (
+        "an unknown state must not be toggled"
+    )
+    assert "continue" in body.split("if state is None:")[1][:400]
+    del sys, types, unknown
+
+
+def test_the_algo_state_is_read_from_the_terminal_not_its_log():
+    """`terminal_info().trade_allowed` is what the terminal answers an order
+    with. The log records a *transition*, so a terminal that has never toggled
+    says nothing at all - on 2026-09-12 it held 20,998 lines with not one
+    mention of trading while AutoTrading was off."""
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[3] / "assets" / "auto_login.py"
+    text = source.read_text()
+    assert "def algo_trading_state" in text
+    state = text.split("def algo_trading_state")[1].split("@staticmethod")[0]
+    assert "terminal_info" in state
+    assert "trade_allowed" in state
+    # And the log survives as a fallback rather than the authority.
+    assert "algo_trading_log()" in state
+
+
+def test_the_launcher_does_not_spawn_a_second_terminal():
+    """MT5 refuses a second instance on the same portable data directory and
+    exits 0 at once, which the loop read as a clean shutdown: **11,945 restarts
+    over eighteen hours**, about eleven a minute, replacing the GUI the VNC
+    auto-login types into every five seconds."""
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[3] / "assets" / "run-mt5.sh"
+    text = source.read_text()
+    assert "terminal_running()" in text, "the launcher must be able to see an existing terminal"
+    assert "pgrep -f 'terminal64.exe'" in text
+    # The guard has to come before the launch, not only after it.
+    before = text.split("echo \"Launching MetaTrader 5...\"")[0]
+    assert "if terminal_running; then" in before
