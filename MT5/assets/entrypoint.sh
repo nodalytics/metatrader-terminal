@@ -6,19 +6,66 @@
 rm -f /tmp/login_complete /tmp/.X0-lock
 rm -f /tmp/.X11-unix/X0 2>/dev/null
 
-# Ensure algo trading is enabled in the MT5 config.
-# The terminal disables it on account changes and persists Enabled=0.
-# This re-enables it before the terminal starts.
+# Settle the MT5 config before the terminal starts.
+#
+# Two things, and both have to happen here rather than afterwards: the terminal
+# reads this file at startup and rewrites it from memory on exit, so anything
+# changed while it runs is discarded.
+#
+#   * **Algo trading.** The terminal disables it on an account change and
+#     persists `Enabled=0`, which silently stops every order.
+#   * **Max bars in chart.** This caps how much history the terminal keeps per
+#     chart, and therefore how much `copy_rates_*` can return. At the installed
+#     default of 100,000 the hourly series for the FX majors stopped at exactly
+#     99,999 bars - August 2010 - while gold, which has less history than that,
+#     stopped at its true start. The cap was the binding constraint, not the
+#     broker.
+#
+# `common.ini` is UTF-16, which is why this is a Python block and not `sed`. A
+# byte-level replacement was enough for the algo flag; setting a numeric value
+# whose digit count changes is not, so the file is decoded properly.
 MT5_COMMON="${WINEPREFIX:-/opt/wineprefix}/drive_c/Metatrader-5/Config/common.ini"
+MT5_MAX_BARS="${MT5_MAX_BARS:-1000000}"
 if [ -f "$MT5_COMMON" ]; then
-    python3 -c "
-import sys
-data = open('$MT5_COMMON', 'rb').read()
-patched = data.replace(b'E\x00n\x00a\x00b\x00l\x00e\x00d\x00=\x000\x00', b'E\x00n\x00a\x00b\x00l\x00e\x00d\x00=\x001\x00', 1)
-if patched != data:
-    open('$MT5_COMMON', 'wb').write(patched)
-    print('==> Algo trading re-enabled in common.ini')
-"
+    MT5_COMMON="$MT5_COMMON" MT5_MAX_BARS="$MT5_MAX_BARS" python3 - <<'SETTLE'
+import os
+import re
+
+path = os.environ["MT5_COMMON"]
+want = os.environ.get("MT5_MAX_BARS", "1000000").strip()
+
+raw = open(path, "rb").read()
+try:
+    text = raw.decode("utf-16")
+except UnicodeDecodeError:
+    # Not the encoding we expect. Leaving it alone beats corrupting the only
+    # copy of the terminal's settings.
+    print("==> common.ini is not UTF-16; left untouched")
+    raise SystemExit(0)
+
+before = text
+
+# Algo trading, exactly as before: the first `Enabled=0` in the file.
+text = text.replace("Enabled=0", "Enabled=1", 1)
+
+if want.isdigit() and int(want) > 0:
+    found = re.search(r"^MaxBars=(\d+)\s*$", text, re.MULTILINE)
+    if found:
+        if found.group(1) != want:
+            text = text[: found.start()] + f"MaxBars={want}" + text[found.end() :]
+            print(f"==> MaxBars {found.group(1)} -> {want}")
+    elif "[Charts]" in text:
+        text = text.replace("[Charts]", f"[Charts]\r\nMaxBars={want}", 1)
+        print(f"==> MaxBars set to {want}")
+else:
+    print(f"==> MT5_MAX_BARS={want!r} is not a positive integer; ignored")
+
+if text != before:
+    # utf-16 writes the byte-order mark the terminal expects.
+    open(path, "wb").write(text.encode("utf-16"))
+    if "Enabled=1" in text and "Enabled=0" in before:
+        print("==> Algo trading re-enabled in common.ini")
+SETTLE
 fi
 
 # 1. Initialize Authentication (Must happen BEFORE Nginx starts)

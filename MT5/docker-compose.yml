@@ -22,6 +22,12 @@ services:
       API_KEY_SEED: ${API_KEY_SEED:-"default-seed-for-dev"}
       MT5_PASSWORD: ${MT5_PASSWORD:-"password"}
       MT5_SERVER: ${MT5_SERVER:-"MetaTrader-Demo"}
+      # How much history the terminal keeps per chart, and so the most
+      # `copy_rates_*` can return. The installed default is 100,000, which
+      # is what capped the hourly FX series at exactly 99,999 bars. Raising
+      # it costs memory in the terminal, which is why the limit below is
+      # what it is.
+      MT5_MAX_BARS: ${MT5_MAX_BARS:-1000000}
     env_file:
       - path: .env
         required: false
@@ -32,6 +38,11 @@ services:
       resources:
         limits:
           cpus: '0.8'
-          memory: 1G
+          # 4G, not 1G. The terminal caches `MT5_MAX_BARS` bars per chart and a
+          # deep history request marshals every bar through Python, so 1G is not
+          # enough to serve one: a request for 100,000 hourly bars failed inside
+          # the terminal and came back as a 404. The running deployment was
+          # already raised to 4G by hand; this is the file catching up with it.
+          memory: 4G
         reservations:
           memory: 512M
