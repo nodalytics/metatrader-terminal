@@ -214,6 +214,27 @@ def account(**over):
     return AccountInfo(**fields)
 
 
+def bar(when=1_700_000_000, open_=4400.0, high=4410.0, low=4390.0, close=4405.0, **over):
+    """One candle, shaped as `copy_rates_*` returns them.
+
+    The real package hands back a numpy structured array; `pandas.DataFrame`
+    accepts a list of dicts identically, and the application only ever goes
+    through pandas.
+    """
+    row = {
+        "time": when,
+        "open": open_,
+        "high": high,
+        "low": low,
+        "close": close,
+        "tick_volume": 100,
+        "spread": 15,
+        "real_volume": 0,
+    }
+    row.update(over)
+    return row
+
+
 def order_result(retcode=TRADE_RETCODE_DONE, **over):
     fields = dict(
         retcode=retcode,
@@ -245,6 +266,10 @@ class State:
         self.symbols = {"XAUUSD": symbol(), "BTCUSD": symbol("BTCUSD", 60_000.0, 60_010.0)}
         self.ticks = {name: tick(s.bid, s.ask) for name, s in self.symbols.items()}
         self.positions: list = []
+        #: What the rate routes return. `None` imitates an MT5 failure,
+        #: which is a different thing from an empty market and used to be
+        #: indistinguishable from one over HTTP.
+        self.rates: list | None = []
         self.next_result = order_result()
         self.error = (0, "Success")
         #: Every call made, as (name, args, kwargs). The point of a fake: a
@@ -356,17 +381,17 @@ def order_check(request):
 
 def copy_rates_from_pos(name, timeframe, start, count):
     _record("copy_rates_from_pos", name, timeframe, start, count)
-    return []
+    return state.rates
 
 
 def copy_rates_range(name, timeframe, start, end):
     _record("copy_rates_range", name, timeframe, start, end)
-    return []
+    return state.rates
 
 
 def copy_rates_from(name, timeframe, start, count):
     _record("copy_rates_from", name, timeframe, start, count)
-    return []
+    return state.rates
 
 
 def copy_ticks_from(name, start, count, flags):

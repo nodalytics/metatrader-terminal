@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Optional, List, Dict
 from .connector import mt5_connector
 from app.utils.constants import MT5Timeframe
-from app.utils.exceptions import MT5SymbolNotFoundError
+from app.utils.exceptions import MT5DataError, MT5SymbolNotFoundError
 from app.utils.cache import cache_manager
 
 class MarketDataService:
@@ -72,33 +72,44 @@ class MarketDataService:
         cache_manager.set(cache_key, tick_dict, ttl=1)  # Tick data changes frequently
         return tick_dict
 
-    def copy_rates_from_pos(self, symbol: str, timeframe: str, start_pos: int, count: int) -> Optional[List[Dict]]:
+
+    def _records(self, rates, symbol: str, what: str) -> List[Dict]:
+        """Bars as JSON records, keeping an empty market apart from a failure.
+
+        Two distinct answers used to collapse into one 404:
+
+        * `None` - the terminal failed. Raised, with MT5's own error attached by
+          the application's exception handler, so a caller can see *why*.
+        * empty - a real answer about a window with no bars in it. Returned as
+          `[]`, which it previously could not be: `pd.DataFrame([])` has no
+          `time` column, so the next line raised `KeyError` and the route 500d.
+        """
+        if rates is None:
+            raise MT5DataError(f"{what} failed for '{symbol}'")
+        if len(rates) == 0:
+            return []
+        df = pd.DataFrame(rates)
+        df['time'] = pd.to_datetime(df['time'], unit='s')
+        return df.to_dict(orient='records')
+
+    def copy_rates_from_pos(self, symbol: str, timeframe: str, start_pos: int, count: int) -> List[Dict]:
         mt5_connector.initialize()
         mt5_timeframe = self.get_timeframe(timeframe)
         rates = mt5.copy_rates_from_pos(symbol, mt5_timeframe, start_pos, count)
-        if rates is None: return None
-        df = pd.DataFrame(rates)
-        df['time'] = pd.to_datetime(df['time'], unit='s')
-        return df.to_dict(orient='records')
+        return self._records(rates, symbol, 'copy_rates_from_pos')
 
-    def copy_rates_range(self, symbol: str, timeframe: str, start: datetime, end: datetime) -> Optional[List[Dict]]:
+    def copy_rates_range(self, symbol: str, timeframe: str, start: datetime, end: datetime) -> List[Dict]:
         mt5_connector.initialize()
         mt5_timeframe = self.get_timeframe(timeframe)
         rates = mt5.copy_rates_range(symbol, mt5_timeframe, start, end)
-        if rates is None: return None
-        df = pd.DataFrame(rates)
-        df['time'] = pd.to_datetime(df['time'], unit='s')
-        return df.to_dict(orient='records')
+        return self._records(rates, symbol, 'copy_rates_range')
 
-    def copy_rates_from(self, symbol: str, timeframe: str, date_from: datetime, count: int) -> Optional[List[Dict]]:
+    def copy_rates_from(self, symbol: str, timeframe: str, date_from: datetime, count: int) -> List[Dict]:
         mt5_connector.initialize()
         mt5.symbol_select(symbol, True)
         mt5_timeframe = self.get_timeframe(timeframe)
         rates = mt5.copy_rates_from(symbol, mt5_timeframe, date_from, count)
-        if rates is None: return None
-        df = pd.DataFrame(rates)
-        df['time'] = pd.to_datetime(df['time'], unit='s')
-        return df.to_dict(orient='records')
+        return self._records(rates, symbol, 'copy_rates_from')
 
     def copy_ticks_from(self, symbol: str, date_from: datetime, count: int, flags: str = 'ALL') -> Optional[List[Dict]]:
         mt5_connector.initialize()

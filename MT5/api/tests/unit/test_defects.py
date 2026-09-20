@@ -309,3 +309,81 @@ def test_the_launcher_does_not_spawn_a_second_terminal():
     # The guard has to come before the launch, not only after it.
     before = text.split("echo \"Launching MetaTrader 5...\"")[0]
     assert "if terminal_running; then" in before
+
+
+def test_a_quiet_market_is_an_empty_list_not_a_crash(app_client, terminal):
+    """`copy_rates_*` returning an empty array is normal - a closed session, a
+    window with no bars in it - and the routes turned it into a 500.
+
+    `pd.DataFrame([])` has no `time` column, so `df['time'] = ...` raises
+    `KeyError` two lines later. The integration tests never caught it because
+    they run against a live terminal that always has bars.
+    """
+    terminal.rates = []
+    for route, params in (
+        ("/api/v1/symbols/rates/pos", {"symbol": "XAUUSD", "timeframe": "H1", "num_bars": 10}),
+        (
+            "/api/v1/symbols/rates/from",
+            {"symbol": "XAUUSD", "timeframe": "H1", "date_from": "2026-01-01T00:00:00", "count": 10},
+        ),
+        (
+            "/api/v1/symbols/rates/range",
+            {
+                "symbol": "XAUUSD",
+                "timeframe": "H1",
+                "start": "2026-01-01T00:00:00",
+                "end": "2026-01-02T00:00:00",
+            },
+        ),
+    ):
+        response = app_client.get(route, params=params)
+        assert response.status_code == 200, (route, response.status_code, response.text[:200])
+        assert response.json() == [], route
+
+
+def test_a_terminal_failure_does_not_masquerade_as_a_missing_symbol(app_client, terminal):
+    """**The defect that cost the most.** When MT5 fails, `copy_rates_*` returns
+    `None`, and every route turned that into `404 "No rate data found"` - the same
+    answer a symbol that does not exist gets.
+
+    A client asking for more bars than the terminal can marshal therefore reads
+    "this symbol has no data". That is exactly what happened: a request for
+    400,000 bars 404d, and the client reported all 722 symbols as absent.
+
+    The status must say the request failed, and the body must carry MT5's own
+    error so the cause is visible.
+    """
+    terminal.rates = None
+    terminal.error = (-10004, "IPC recv failed")
+    response = app_client.get(
+        "/api/v1/symbols/rates/pos",
+        params={"symbol": "XAUUSD", "timeframe": "H1", "num_bars": 400_000},
+    )
+    assert response.status_code != 404, "an MT5 failure is not a missing symbol"
+    assert response.status_code >= 500
+    detail = str(response.json())
+    assert "IPC recv failed" in detail or "-10004" in detail, detail
+
+
+def test_the_count_reaches_the_terminal_unchanged(app_client, terminal):
+    """`rates/from` was accused here of ignoring its `count`. It does not.
+
+    It counts *backward* from `date_from`, mirroring MQL5's `CopyRates`, so
+    asking from the very start of history correctly yields one bar - which reads
+    like a broken count and is not one. This pins the pass-through so the
+    accusation cannot be made again without evidence.
+    """
+    terminal.rates = [fake_mt5.bar(when=1_700_000_000 + i * 3600) for i in range(5)]
+    response = app_client.get(
+        "/api/v1/symbols/rates/from",
+        params={
+            "symbol": "XAUUSD",
+            "timeframe": "H1",
+            "date_from": "2026-01-01T00:00:00",
+            "count": 3000,
+        },
+    )
+    assert response.status_code == 200, response.text[:200]
+    sent = [c for c in terminal.calls if c[0] == "copy_rates_from"]
+    assert sent, terminal.calls
+    assert sent[-1][1][-1] == 3000, f"count arrived as {sent[-1][1][-1]}"

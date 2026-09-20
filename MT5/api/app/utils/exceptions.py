@@ -22,3 +22,15 @@ class MT5SymbolNotFoundError(MT5BaseException):
 class MT5RateLimitError(MT5BaseException):
     """Too many requests to MT5 terminal."""
     status_code = 429
+
+class MT5DataError(MT5BaseException):
+    """The terminal refused or failed a data request.
+
+    **Not a 404.** `copy_rates_*` and `copy_ticks_*` answer `None` both for a
+    symbol that does not exist and for a request the terminal could not
+    marshal - a count too large for it, an IPC hiccup, history still loading.
+    Reporting all of those as "not found" told one client that all 722 of its
+    symbols were absent when the truth was that it had asked for 400,000 bars.
+    502 says the upstream failed, and the handler attaches MT5's own error.
+    """
+    status_code = 502
