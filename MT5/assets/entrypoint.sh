@@ -57,6 +57,17 @@ if want.isdigit() and int(want) > 0:
     elif "[Charts]" in text:
         text = text.replace("[Charts]", f"[Charts]\r\nMaxBars={want}", 1)
         print(f"==> MaxBars set to {want}")
+    else:
+        # **A freshly built image has no `[Charts]` section at all.** The terminal
+        # writes one the first time it runs, which is after this script, so on the
+        # very first boot of a new container there is nothing here to patch and an
+        # earlier version of this silently did nothing - the cap stayed at 100,000
+        # and the only clue was the absence of a log line. Append the section so
+        # the first boot is settled too.
+        if not text.endswith(("\n", "\r")):
+            text += "\r\n"
+        text += f"[Charts]\r\nMaxBars={want}\r\n"
+        print(f"==> no [Charts] section; appended one with MaxBars={want}")
 else:
     print(f"==> MT5_MAX_BARS={want!r} is not a positive integer; ignored")
 
@@ -65,6 +76,8 @@ if text != before:
     open(path, "wb").write(text.encode("utf-16"))
     if "Enabled=1" in text and "Enabled=0" in before:
         print("==> Algo trading re-enabled in common.ini")
+else:
+    print("==> common.ini already settled")
 SETTLE
 fi
 
