@@ -1,4 +1,4 @@
-numpy==1.21.4 #==1.19.5 # ==1.18.2
+numpy==1.22.4  # 1.22 fixes CVE-2021-34141; 1.24+ drops aliases pandas 1.4 uses
 MetaTrader5==5.0.5640
 pyparsing==2.4.7
 # mt5linux
