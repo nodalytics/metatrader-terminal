@@ -14,7 +14,8 @@ Skip this section if you already have a server.
 
 ### Instance type
 
-Use an **`m7i-flex.large`** (2 vCPU, 8 GiB). The container sets three constraints:
+Use a **`t3a.large`** (2 vCPU, 8 GiB, AMD). It is the cheapest instance that
+meets the container's three constraints:
 
 - **The CPU must be x86-64.** MT5 and Wine are x86-only, so Graviton
   (`t4g`, `m7g`, `c7g`) runs the image under QEMU emulation, and the VNC
@@ -22,19 +23,27 @@ Use an **`m7i-flex.large`** (2 vCPU, 8 GiB). The container sets three constraint
   [README](../README.md).
 - **About 8 GiB of RAM.** `MT5/docker-compose.yml` caps the container at 4G,
   because deep history requests fail below that. The OS, Docker and nginx
-  need room on top, so 4 GiB instances like `t3.medium` are too small.
-- **The CPU load is steady, not bursty.** The container can use up to `0.8`
-  of a CPU, and the terminal and the stream loop run all the time. A
-  `t3.large` sustains only about 30% per vCPU before it uses up its CPU
-  credits, then it slows down or, in unlimited mode, bills the extra.
-  Flex instances don't use CPU credits.
+  need room on top, so 4 GiB instances like `t3a.medium` are too small.
+- **The CPU must not run out.** `t3a` is a burstable type: it sustains 30% of
+  each vCPU (0.6 of a CPU), and the container is allowed up to `0.8`. Keep
+  **credit specification: unlimited**, which is the default for `t3a`, so
+  the instance bills any usage above baseline instead of slowing the
+  terminal down. At worst, a constant 0.2 CPU over baseline adds about
+  $7/month, and in practice the terminal idles well below that.
 
-| Instance | vCPU / RAM | When to use it |
-| :--- | :--- | :--- |
-| `m7i-flex.large` | 2 / 8 GiB | The default. |
-| `t3a.large` / `t3.large` | 2 / 8 GiB | Cheapest option for a light load. Watch `CPUCreditBalance` in CloudWatch. |
-| `m7i.large` | 2 / 8 GiB | If the flex instance ever throttles. |
-| `m7i-flex.xlarge` | 4 / 16 GiB | If you raise `MT5_MAX_BARS` further or run more than one terminal. |
+For the first week, watch `CPUSurplusCreditsCharged` in CloudWatch. If it
+stays high, `m7i-flex.large` is the next step up. It doesn't use CPU credits.
+
+| Instance | vCPU / RAM | ≈ On-demand, us-east-1 | When to use it |
+| :--- | :--- | :--- | :--- |
+| `t3a.large` | 2 / 8 GiB | $0.0752/hr (~$55/mo) | The default. |
+| `t3.large` | 2 / 8 GiB | $0.0832/hr (~$61/mo) | If `t3a` isn't offered in your region or availability zone. |
+| `m7i-flex.large` | 2 / 8 GiB | $0.0958/hr (~$70/mo) | If surplus credit charges stay high. |
+| `m7i-flex.xlarge` | 4 / 16 GiB | about 2× the above | If you raise `MT5_MAX_BARS` further or run more than one terminal. |
+
+These are list prices as of September 2026. A 1-year reserved instance or
+Savings Plan takes about 35–40% off. Storage (about $3/month) and the public
+IPv4 address (about $3.65/month) cost the same on every instance.
 
 ### Region
 
