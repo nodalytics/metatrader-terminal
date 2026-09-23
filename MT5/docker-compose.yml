@@ -11,9 +11,14 @@ services:
   mt5-terminal:
     image: ghcr.io/nodalytics/mt5-terminal:latest
     platform: linux/amd64
+    # Loopback only. Both are reached through something on this host: nginx
+    # proxies to localhost:6901 and localhost:8000, and the reverse tunnel and
+    # scripts/vnc-tunnel.sh forward to them over SSH. Published on 0.0.0.0 they
+    # were open to anyone who could reach the host, and Docker writes its own
+    # iptables rules ahead of ufw, so `ufw deny` did not close them.
     ports:
-      - "6901:6901"
-      - "8000:8000"
+      - "127.0.0.1:6901:6901"
+      - "127.0.0.1:8000:8000"
     environment:
       VNC_USER: ${VNC_USER:-"mt5_user"}
       VNC_PASSWORD: ${VNC_PASSWORD:-"password"}

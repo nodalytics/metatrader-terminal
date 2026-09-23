@@ -64,9 +64,11 @@ region.
     workflow in [github-actions-setup.md](github-actions-setup.md).
   - `80/tcp` and `443/tcp` from anywhere. nginx serves VNC and the API, and
     Certbot needs port 80.
-  - **Do not open `6901` or `8000`.** The compose file publishes both on every
-    interface, and Docker bypasses `ufw`, so the security group is the only
-    thing that keeps the VNC desktop and the API off the public internet.
+  - **Do not open `6901` or `8000`.** The compose file binds both to
+    `127.0.0.1`, so nothing outside the host can reach them anyway. But
+    `docker run` without the `127.0.0.1:` prefix, or an older compose file,
+    publishes them on every interface. Docker bypasses `ufw`, so in that
+    case the security group is the only thing that keeps them private.
 - **Elastic IP**: attach one, so your DNS records and the tunnel's `REMOTE=`
   address survive a stop and start.
 
@@ -117,8 +119,8 @@ docker compose -f MT5/docker-compose.yml --env-file .env up -d
 ```bash
 docker run -d \
   --name mt5-terminal \
-  -p 6901:6901 \
-  -p 8000:8000 \
+  -p 127.0.0.1:6901:6901 \
+  -p 127.0.0.1:8000:8000 \
   -e MT5_LOGIN=12345678 \
   -e MT5_PASSWORD=your_password \
   -e MT5_SERVER=YourBroker-Demo \
@@ -181,5 +183,33 @@ sudo certbot --nginx -d vnc.yourdomain.com -d api.yourdomain.com
 
 ## 8. Accessing the Services
 
+Ports `6901` (VNC) and `8000` (API) are bound to `127.0.0.1` on the server,
+so `http://<server-ip>:6901` does not work. There are two ways in.
+
+### Over SSH (no setup)
+
+From your own machine:
+
+```bash
+./scripts/vnc-tunnel.sh ubuntu@<server-ip> -k ~/.ssh/your-key.pem
+```
+
+This forwards the server's `6901` to `127.0.0.1:6901` on your machine and
+opens noVNC in your browser. It needs only port 22, and the screen is
+reachable only from your machine. Without the script, run
+`ssh -N -L 6901:127.0.0.1:6901 ubuntu@<server-ip>` and open
+`http://localhost:6901`. The same works for the API: use `-L 8000:127.0.0.1:8000`,
+then open `http://localhost:8000/docs`.
+
+### Through nginx (from any browser)
+
+Once sections 6 and 7 are done:
+
 - **MT5 VNC**: `https://vnc.yourdomain.com`
 - **MT5 API**: `https://api.yourdomain.com`
+
+These URLs are public, so the only thing protecting the MT5 desktop is
+`VNC_PASSWORD`, and the API only has `API_KEY_SEED`. Set both in `.env`. The
+compose defaults (`password` and `default-seed-for-dev`) are published in
+this repository, and the API key is derived from the seed, so anyone can
+compute the default key.

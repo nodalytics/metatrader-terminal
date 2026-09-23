@@ -102,8 +102,8 @@ Two things that are easy to get wrong and hard to see afterwards:
     ```bash
     docker run -d \
       --name mt5-terminal \
-      -p 6901:6901 \
-      -p 8000:8000 \
+      -p 127.0.0.1:6901:6901 \
+      -p 127.0.0.1:8000:8000 \
       -e MT5_LOGIN=12345678 \
       -e MT5_PASSWORD=your_password \
       -e MT5_SERVER=YourBroker \
