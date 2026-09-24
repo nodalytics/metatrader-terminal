@@ -170,6 +170,32 @@ curl -X POST localhost:8000/api/v1/terminal/algo-trading \
 rather than shared on purpose: it is the break-glass path, and it has to work
 when this service will not start.
 
+**And the endpoint is the remedy, not the prevention.** The prevention is
+`assets/ensure_algo_ini.py`, which `run-mt5.sh` now runs **before every launch**.
+`common.ini` holds the persistent form of the switch, and that file was written
+only inside the installer's `if [ ! -f terminal64.exe ]` branch - set once, never
+reasserted. MT5 rewrites it on exit, so a terminal that ever exited with the
+switch off left it off for every launch afterwards, which is exactly the
+2026-09-24 outage.
+
+That script is surgical for a reason worth knowing before editing it: a live
+`common.ini` is not the four lines the installer wrote. It holds
+`[Common] Environment=...`, MT5's **encrypted credential blob**, beside `Login`
+and `Server`. Rewriting the file the way the installer does would take the
+account's login with it, and the failure would show up as an unrelated inability
+to connect. So it changes one value in place, preserves every other line
+byte-for-byte, writes atomically via a temporary file in the same directory, and
+keeps one backup the first time it changes anything.
+
+The encoding is part of the contract: MT5 writes UTF-16LE with a byte-order mark
+and CRLF, and silently ignores a file in any other encoding - a failure that
+would look exactly like the script not working while it reported success. It
+reads the file back after writing for that reason.
+
+It runs under the container's `python3` (3.9), not Wine's, and is never fatal: a
+terminal that starts with AutoTrading off is recoverable through the endpoint
+above, and one that does not start is not.
+
 #### `/health` answers three questions, not one
 
 ```json

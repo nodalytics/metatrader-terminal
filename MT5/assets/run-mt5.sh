@@ -95,6 +95,25 @@ while true; do
         continue
     fi
 
+    # **Before every launch, not once at install.** `common.ini` carries the persistent
+    # AutoTrading switch, MT5 rewrites that file when it exits, and a terminal that exits
+    # with the switch off leaves it off for every launch afterwards. On 2026-09-24 that
+    # refused every order with retcode 10027 until somebody pressed Ctrl+E by hand.
+    #
+    # Here rather than above the loop because this loop relaunches after a crash, and a
+    # crash is one of the ways the file ends up saying Enabled=0.
+    #
+    # Safe to run now and only now: the branch above guarantees no terminal is up, and
+    # editing the file under a running terminal would be overwritten on its exit.
+    #
+    # Never fatal. The script is surgical - it changes one value in place and writes
+    # atomically, because this file also holds the encrypted account credentials - but a
+    # terminal that starts with AutoTrading off can be fixed through the API, and one that
+    # never starts cannot.
+    python3 /root/ensure_algo_ini.py \
+        /opt/wineprefix/drive_c/Metatrader-5/Config/common.ini || \
+        echo "could not assert AutoTrading in common.ini - launching anyway"
+
     echo "Launching MetaTrader 5..."
     wine /opt/wineprefix/drive_c/Metatrader-5/terminal64.exe /portable
     EXIT_CODE=$?
