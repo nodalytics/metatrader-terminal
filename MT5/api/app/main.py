@@ -98,7 +98,50 @@ def create_app() -> FastAPI:
     # Health Check (Internal/System)
     @app.get("/health", tags=["System"])
     def health_check():
-        return {"status": "ok", "version": settings.env.API_VERSION}
+        """Whether this service is up **and whether a terminal is usable**.
+
+        The second half was added 2026-09-24 after two outages that this route
+        actively concealed.
+
+        It used to return `{"status": "ok", "version": ...}` - true of the web
+        service and silent about the only thing a caller cares about. So a
+        consumer polling it saw `ok` while:
+
+        * **no terminal was attached at all** - the desk retried once a minute
+          for over a day against a bridge answering 200 here;
+        * **AutoTrading was off** - the terminal was attached, this route said
+          `ok`, and every order came back 10027 `AutoTrading disabled by
+          client`.
+
+        Both are now fields. `status` stays `ok` whenever the service can
+        answer, because that is what it means and a load balancer depends on
+        it; a caller that needs a *tradable* terminal reads `connected` and
+        `trade_allowed`.
+
+        **It never raises.** A health route that 500s when the terminal is
+        missing tells you less than one that reports the terminal is missing,
+        and it is the missing case this exists for. `build` is carried because
+        the terminal upgrades itself from the broker and a bad build has broken
+        IPC before - without it, "which build was that on?" is unanswerable
+        after the fact.
+        """
+        body = {
+            "status": "ok",
+            "version": settings.env.API_VERSION,
+            "connected": False,
+            "trade_allowed": False,
+            "build": None,
+        }
+        try:
+            info = mt5.terminal_info()
+        except Exception:
+            return body
+        if info is None:
+            return body
+        body["connected"] = bool(getattr(info, "connected", False))
+        body["trade_allowed"] = bool(getattr(info, "trade_allowed", False))
+        body["build"] = getattr(info, "build", None)
+        return body
 
     # Auth routes (Unprotected)
     app.include_router(auth.router, prefix="/api/v1")

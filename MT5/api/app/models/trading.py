@@ -8,6 +8,18 @@ from app.utils.constants import (
     ORDER_FILLING_STR_MAP
 )
 
+class AlgoTradingRequest(BaseModel):
+    """What the AutoTrading toggle should be set to.
+
+    A setter rather than a toggle on purpose. `enabled` is where the terminal
+    should end up, so the same call repeated is a no-op - see
+    `app.services.algo`, where pressing Ctrl+E blind on an unknown state is the
+    bug this shape exists to prevent.
+    """
+
+    enabled: bool = True
+
+
 class MarketOrderRequest(BaseModel):
     symbol: str
     volume: float

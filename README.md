@@ -134,6 +134,60 @@ All endpoints (except auth, health, and docs) require an `X-API-Key` header. Get
 | POST | `/api/v1/terminal/connect` | Connect with credentials |
 | POST | `/api/v1/terminal/disconnect` | Disconnect from terminal |
 | GET | `/api/v1/terminal/ping` | Broker ping latency |
+| GET | `/api/v1/terminal/algo-trading` | Is AutoTrading on? (`trade_allowed`) |
+| POST | `/api/v1/terminal/algo-trading` | Set AutoTrading. Idempotent - `{"enabled": true}` |
+
+#### AutoTrading, and why it needs an endpoint
+
+`MetaTrader5` can read `terminal_info().trade_allowed` and cannot change it: the
+Algo Trading switch is a GUI control with no programmatic setter. So this
+endpoint sends Ctrl+E over VNC, and everything interesting about it is in the
+guard rails:
+
+* **It is a setter, not a toggle.** It reads the current state and presses only
+  on a genuine mismatch, so calling it twice is the same as calling it once and
+  it is safe in a deploy step. An earlier start-up path pressed Ctrl+E three
+  times on an unknown state - an odd number, so it guaranteed a net change from
+  wherever it started, which is how AutoTrading came to be *off*.
+* **It will not press on an unknown state.** If `terminal_info()` cannot answer,
+  that is not "off"; it returns 409 rather than guessing.
+* **It verifies against the terminal, not the log.** The terminal's log records
+  a *transition*, so it is silent about a terminal that has never toggled - one
+  incident had 20,998 log lines with no mention of trading while every order was
+  rejected with 10027.
+
+`account.trade_allowed` is a **different** flag, set by the broker. A terminal
+can report `True` there and still refuse every order because this one is false.
+
+```bash
+curl -X POST localhost:8000/api/v1/terminal/algo-trading \
+     -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+     -d '{"enabled": true}'
+# {"trade_allowed": true, "changed": true, "presses": 1}
+```
+
+`assets/toggle_algo.py` does the same thing from a shell. It is duplicated
+rather than shared on purpose: it is the break-glass path, and it has to work
+when this service will not start.
+
+#### `/health` answers three questions, not one
+
+```json
+{"status": "ok", "version": "1.0.0", "connected": true,
+ "trade_allowed": true, "build": 6182}
+```
+
+`status` is about this web service and stays `ok` whenever it can answer, so a
+load balancer can keep using it. A caller that needs a **tradable** terminal
+must read `connected` and `trade_allowed`, because the two failures that have
+actually happened here both left `status` at `ok`: a consumer polled a bridge
+with no terminal attached for over a day, and a terminal with AutoTrading off
+refused every order while reporting healthy.
+
+`build` is carried because the terminal's build has broken the Python binding's
+IPC before, and without it "which build was that on?" is unanswerable after the
+fact. It never raises - a health route that 500s when the terminal is missing
+tells you less than one that reports the terminal is missing.
 
 ### Symbols & Market Data
 | Method | Endpoint | Description |
@@ -142,6 +196,7 @@ All endpoints (except auth, health, and docs) require an `X-API-Key` header. Get
 | GET | `/api/v1/symbols/{symbol}` | Symbol info |
 | POST | `/api/v1/symbols/select/{symbol}` | Add symbol to Market Watch |
 | GET | `/api/v1/symbols/ticks/{symbol}` | Current bid/ask tick |
+| GET | `/api/v1/symbols/ticks?symbols=A,B,C` | Ticks for many symbols in one call |
 | GET | `/api/v1/symbols/rates/from` | OHLC bars from datetime + count |
 | GET | `/api/v1/symbols/rates/pos` | OHLC bars from position + count |
 | GET | `/api/v1/symbols/rates/range` | OHLC bars for date range |
@@ -311,6 +366,24 @@ The project uses the following key variables in your `.env`:
 | `MT5_SERVER` | Your broker's server name (e.g. `Deriv-Demo`) | - |
 | `MT5_API_PORT` | Port for the FastAPI service | `8000` |
 | `API_KEY_SEED` | Seed for API key authentication | - |
+| `MT5_SETUP_URL` | Installer to fetch, for pinning a terminal build | MetaQuotes' *latest* |
+
+### Pinning a terminal build
+
+`MT5_SETUP_URL` is unset by default, so the image installs whatever MetaQuotes
+currently publishes. That is the right default: a build pinned a year ago is a
+build a broker may refuse, and being unable to install is worse than installing
+something new.
+
+It is overridable because a bad terminal build is a real failure mode - one
+build broke the Python binding's IPC where the previous one was fine - and
+testing that hypothesis means installing a specific version. Point
+`MT5_SETUP_URL` at a versioned installer to do it.
+
+**The pin holds.** `run-mt5.sh` writes `LiveUpdateMode=2` before the terminal's
+first launch, so it will not upgrade itself out from under the pin. And whatever
+is installed, `/health` reports `build`, so the version behind a regression is
+answerable from the data rather than from memory.
 
 ## 🧪 Tests
 

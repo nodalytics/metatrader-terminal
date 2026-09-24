@@ -4,8 +4,25 @@
 if [ ! -f "/opt/wineprefix/drive_c/Metatrader-5/terminal64.exe" ]; then
     echo "MetaTrader 5 not found. Starting installation..."
 
-    # MetaTrader download url
-    URL="https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
+    # MetaTrader download url.
+    #
+    # **Unpinned by default, and pinnable by env var.** MetaQuotes publishes
+    # only "latest" at this path, and asking for latest is the right default:
+    # a build this image pinned a year ago is a build the broker may refuse to
+    # talk to, and being unable to install is worse than installing something
+    # new.
+    #
+    # But a pin has to be *reachable*, because a bad terminal build is a real
+    # failure mode here - build 6204 broke the Python binding's IPC while 6140
+    # was fine, and the only way to test that hypothesis is to install a
+    # specific one. Set MT5_SETUP_URL to a versioned installer to do that.
+    #
+    # Note this pin actually holds, unlike on a stock terminal: LiveUpdate is
+    # disabled below before the first launch, so the build installed here is
+    # the build that runs. Whatever is installed, `/health` reports it, so the
+    # build behind a regression is answerable after the fact rather than from
+    # memory.
+    URL="${MT5_SETUP_URL:-https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe}"
     # WebView2 Runtime download url
     URL_WEBVIEW="https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/c1336fd6-a2eb-4669-9b03-949fc70ace0e/MicrosoftEdgeWebview2Setup.exe"
 

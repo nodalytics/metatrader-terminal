@@ -277,6 +277,18 @@ class State:
         #: invisible in a mock that accepts anything.
         self.calls: list = []
         self.selected: list = []
+        #: What `terminal_info()` reports. Settable because the AutoTrading
+        #: toggle is a *state machine* the code under test drives, not a
+        #: constant: `app.services.algo` reads this, decides whether to press,
+        #: and reads it again. A hardcoded `True` made the interesting half of
+        #: that untestable.
+        self.trade_allowed = True
+        self.connected = True
+        self.build = 3815
+        #: `terminal_info()` returns `None` when the terminal cannot answer,
+        #: which is a third state distinct from on and off - and the one the
+        #: blind-press bug turned on. Tests need to produce it.
+        self.terminal_info_none = False
 
 
 state = State()
@@ -308,12 +320,15 @@ def version():
 
 
 def terminal_info():
+    _record("terminal_info")
+    if state.terminal_info_none:
+        return None
     return TerminalInfo(
         community_account=False,
-        connected=True,
+        connected=state.connected,
         path="C:\\",
-        build=3815,
-        trade_allowed=True,
+        build=state.build,
+        trade_allowed=state.trade_allowed,
         trade_expert=True,
     )
 

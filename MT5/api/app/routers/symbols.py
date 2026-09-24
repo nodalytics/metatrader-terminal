@@ -1,7 +1,7 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, status
 from app.services.mt5_service import mt5_service
 from app.utils.exceptions import MT5SymbolNotFoundError
-from typing import List
+from typing import Any, Dict, List
 from datetime import datetime
 import MetaTrader5 as mt5
 
@@ -29,6 +29,67 @@ def select_symbol(symbol: str):
     if not selected:
         raise MT5SymbolNotFoundError(f"Failed to select symbol '{symbol}'")
     return {"symbol": symbol, "selected": True}
+
+
+#: Most symbols one request may ask for. Each one costs a `symbol_select` and a
+#: `symbol_info_tick` into the terminal, which is a synchronous IPC round trip,
+#: so an unbounded batch is a way to hold the event loop for an unbounded time.
+#: Forty is comfortably above the ~30 the desk watches and well below anything
+#: that would block noticeably.
+MAX_TICK_BATCH = 40
+
+
+@router.get("/ticks")
+def get_symbol_ticks(symbols: str, use_cache: bool = True):
+    """Quotes for many symbols in one request.
+
+    **Why this exists.** `/ticks/{symbol}` is one HTTP round trip per symbol,
+    and a consumer watching thirty instruments therefore pays thirty of them per
+    sample. Over an SSH tunnel to another continent that is the dominant cost of
+    a quote, and the desk was observed shedding its backlog - `quote backlog
+    full at 5000 - shed 7000 oldest` - while the bridge itself was idle. One
+    request for thirty symbols removes twenty-nine round trips.
+
+    **Partial success is the point.** A batch that fails because one symbol in
+    it is unknown is a batch you cannot use: a caller would have to fall back to
+    asking one at a time, which is the thing being avoided. So each symbol
+    succeeds or fails on its own and both are reported. `ticks` carries what was
+    found, `errors` carries a message per symbol that was not, and the status is
+    200 as long as the request itself was well formed - including when nothing
+    at all resolved, because "none of these thirty symbols exist" is an answer.
+
+    `use_cache` defaults to `True` to match `/ticks/{symbol}`; a streaming
+    caller should pass `False` for the reason `get_symbol_info_tick` documents -
+    a cached tick repeated is worse than no tick.
+    """
+    wanted = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not wanted:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="symbols must name at least one symbol",
+        )
+    # Deduplicate but keep the caller's order, so the response reads like the
+    # request. A repeated symbol is a caller bug, not ours, and silently
+    # charging them two IPC round trips for it is unhelpful.
+    seen: set[str] = set()
+    ordered = [s for s in wanted if not (s in seen or seen.add(s))]
+    if len(ordered) > MAX_TICK_BATCH:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"asked for {len(ordered)} symbols; the limit is {MAX_TICK_BATCH}",
+        )
+
+    ticks: Dict[str, Any] = {}
+    errors: Dict[str, str] = {}
+    for name in ordered:
+        try:
+            ticks[name] = mt5_service.get_symbol_info_tick(name, use_cache=use_cache)
+        except Exception as exc:
+            # Deliberately broad. One symbol's failure must not decide the fate
+            # of the other twenty-nine, and the terminal raises several
+            # different things for "no".
+            errors[name] = str(exc)
+    return {"ticks": ticks, "errors": errors, "requested": len(ordered)}
 
 
 @router.get("/ticks/{symbol}")

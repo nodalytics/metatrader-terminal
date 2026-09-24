@@ -1,6 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
 from app.services.mt5_service import mt5_service
 from app.services.connector import mt5_connector
+from app.services import algo
+from app.models.trading import AlgoTradingRequest
 from app.utils.exceptions import MT5ConnectionError
 from typing import Dict, Any
 import MetaTrader5 as mt5
@@ -51,3 +53,42 @@ def ping():
 def get_last_error():
     code, msg = mt5.last_error()
     return {"error_code": code, "error_message": msg}
+
+
+@router.get("/algo-trading")
+def get_algo_trading() -> Dict[str, Any]:
+    """Whether the terminal will currently accept an order from a program.
+
+    Separate from `/info` - which carries the same field - because this is the
+    one thing a deploy step or a monitor wants, and asking for the whole
+    terminal record to read one boolean invites reading the wrong boolean.
+    `account.trade_allowed` is a *different* flag, set by the broker, and a
+    terminal that answers `True` there will still refuse every order while this
+    one is `False`.
+    """
+    allowed = algo.state()
+    if allowed is None:
+        raise MT5ConnectionError("Failed to read trade_allowed from the terminal")
+    return {"trade_allowed": allowed}
+
+
+@router.post("/algo-trading")
+def set_algo_trading(request: AlgoTradingRequest) -> Dict[str, Any]:
+    """Put AutoTrading where `enabled` says, and report whether it moved.
+
+    Idempotent: asking for the state the terminal is already in presses nothing
+    and returns `changed: false`, so this is safe to call unconditionally on
+    every deploy.
+
+    There is no programmatic setter for this flag in `MetaTrader5` - it is a GUI
+    switch - so the implementation sends Ctrl+E over VNC. See
+    `app.services.algo` for why the state is read first and why that is not an
+    optimisation.
+    """
+    try:
+        return algo.apply(request.enabled)
+    except algo.AlgoToggleError as exc:
+        # 409 rather than 500: the service and the terminal are both fine, and
+        # the request was valid. What failed is that the GUI would not move,
+        # which is a conflict with the terminal's state and often needs a human.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
