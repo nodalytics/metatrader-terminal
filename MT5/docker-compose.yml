@@ -52,13 +52,23 @@ services:
       # `up --force-recreate` or image change silently reinstalled MetaTrader
       # from scratch.
       #
-      # That is not hypothetical. On 2026-09-29 at 04:32 the container was
-      # recreated; terminal64.exe carries that timestamp. The reinstall pulled
-      # an unpinned installer, came up with a fresh `common.ini`, and therefore
-      # with AutoTrading off. The last trade closed at 04:35 and every order
-      # after it was refused with "AutoTrading disabled by client" until the
-      # toggle was pressed by hand on 2026-10-02 at 06:53. **Three days of a
-      # desk that decided correctly and could not act.**
+      # **It was not, however, what caused the 2026-09-29 outage**, and an earlier
+      # version of this comment said it was. The container was created on
+      # 2026-09-20 and only restarted on 10-02, while terminal64.exe was
+      # rewritten in place on 09-29 at 04:32 at a size matching neither image
+      # this repository builds. MetaTrader updated *itself*, reset the Experts
+      # switch doing it, and the last trade closed at 04:35 - three minutes
+      # later. Every order after that was refused with "AutoTrading disabled by
+      # client" until the toggle was pressed by hand on 10-02 at 06:53. Three
+      # days of a desk that decided correctly and could not act, and no recreate
+      # anywhere near it.
+      #
+      # So this volume is insurance against a different failure than the one
+      # that happened. It is still worth having - a recreate does destroy the
+      # prefix, and both images bake a terminal in, so the one a recreate comes
+      # up on is the image's build rather than whatever the running one had
+      # updated itself to. The defence against the self-update is
+      # `ensure_algo_ini.py` and `toggle_algo.py`, not this.
       #
       # `ensure_algo_ini.py` now reasserts the switch before each launch, which
       # closes that specific hole. This closes the class: a recreate stops being
