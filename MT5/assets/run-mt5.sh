@@ -17,11 +17,18 @@ if [ ! -f "/opt/wineprefix/drive_c/Metatrader-5/terminal64.exe" ]; then
     # was fine, and the only way to test that hypothesis is to install a
     # specific one. Set MT5_SETUP_URL to a versioned installer to do that.
     #
-    # Note this pin actually holds, unlike on a stock terminal: LiveUpdate is
-    # disabled below before the first launch, so the build installed here is
-    # the build that runs. Whatever is installed, `/health` reports it, so the
-    # build behind a regression is answerable after the fact rather than from
-    # memory.
+    # **This pin does not hold, and an earlier version of this comment claimed
+    # it did** on the grounds that the LiveUpdate write below disables updating.
+    # It does not. `LiveUpdateMode=2` has been baked into every image since
+    # 2026-08-26, it was still `2` in the live terminal.ini afterwards - MT5
+    # rewrites that file on exit and kept the value - and the terminal
+    # nevertheless replaced its own terminal64.exe on 2026-09-29 at 04:32,
+    # resetting the Experts switch and taking the desk down for three days.
+    #
+    # So treat the installer pin as choosing the *first* build and nothing more.
+    # Whatever ends up installed, `/health` reports it, which is how the build
+    # behind a regression stays answerable after the fact rather than from
+    # memory - and that reporting is the durable part, not the pin.
     URL="${MT5_SETUP_URL:-https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe}"
     # WebView2 Runtime download url
     URL_WEBVIEW="https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/c1336fd6-a2eb-4669-9b03-949fc70ace0e/MicrosoftEdgeWebview2Setup.exe"
@@ -41,9 +48,17 @@ if [ ! -f "/opt/wineprefix/drive_c/Metatrader-5/terminal64.exe" ]; then
     wine mt5setup.exe /auto /path:"C:\Metatrader-5"
     wineserver -w
 
-    # Disable LiveUpdate immediately after install (before any launch)
-    # to prevent terminal from auto-updating to a build newer than
-    # the MetaTrader5 Python library (5.0.5640 on PyPI).
+    # Ask the terminal not to self-update, before any launch, so it does not
+    # move to a build newer than the pinned MetaTrader5 Python library
+    # (5.0.5640 on PyPI).
+    #
+    # **Kept because it is harmless, not because it works.** It did not prevent
+    # the 2026-09-29 self-update - see the note above. MetaQuotes does not
+    # document these values, so `2` may not mean what this assumes, or updates
+    # may simply not be refusable. The defences that are known to work are
+    # downstream of the update, not in front of it: `ensure_algo_ini.py` before
+    # each launch and `POST /api/v1/terminal/algo-trading` for a terminal
+    # already up.
     MT5_CFG_DIR="/opt/wineprefix/drive_c/Metatrader-5/Config"
     mkdir -p "$MT5_CFG_DIR"
     { printf '\xFF\xFE'; printf '[LiveUpdate]\r\nLiveUpdateMode=2\r\n' | iconv -f UTF-8 -t UTF-16LE; } > "$MT5_CFG_DIR/terminal.ini"

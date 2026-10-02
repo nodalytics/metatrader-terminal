@@ -76,8 +76,20 @@ services:
       # MT5_LOGIN/MT5_PASSWORD/MT5_SERVER above, not from the prefix - so what
       # was being lost was the install, the charts and the switch, not access.
       #
-      # The first `up` after adding this still installs, because the volume
-      # starts empty. Every one after it does not.
+      # **The first `up` does not install, and an earlier version of this said it
+      # would.** Docker populates an empty named volume from whatever the image
+      # holds at the mount point, and this image bakes a whole 2.3GB prefix -
+      # wine's registry, the wine-python site-packages the API imports, and a
+      # terminal64.exe. So a fresh volume comes up on the *image's* terminal
+      # and `run-mt5.sh` takes its "already installed" branch.
+      #
+      # Which is the part worth knowing before trusting this: a fresh volume
+      # silently changes **which build runs**, from whatever the live terminal
+      # had updated itself to back to whatever the image was built against. That
+      # is a downgrade of unknown size, and build 6204 is on record breaking the
+      # Python binding's IPC while 6140 was fine. To keep a known-good terminal
+      # across a move to this volume, seed it from the running prefix first and
+      # let the image supply only the wine runtime.
       - mt5-wineprefix:/opt/wineprefix
     restart: unless-stopped
     deploy:
