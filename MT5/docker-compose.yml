@@ -33,11 +33,42 @@ services:
       # it costs memory in the terminal, which is why the limit below is
       # what it is.
       MT5_MAX_BARS: ${MT5_MAX_BARS:-1000000}
+      # Pin the installer to a versioned one here. Empty means the unversioned
+      # `mt5setup.exe`, which is whatever MetaQuotes ships today - and the
+      # Python package is pinned at MetaTrader5==5.0.5640, so a terminal build
+      # the package cannot talk to takes the desk's broker away with it. Build
+      # 6140 is known good and 6204 is known bad; 6230 is serving now. Empty is
+      # the default because a URL that 404s stops the terminal installing at
+      # all, which is worse - but pin it before any deliberate reinstall.
+      MT5_SETUP_URL: ${MT5_SETUP_URL:-}
     env_file:
       - path: .env
         required: false
     volumes:
       - ./data:/app/data
+      # **The Wine prefix must outlive the container**, and until 2026-10-02 it
+      # did not. It holds terminal64.exe and `Config/common.ini`, and nothing
+      # but the container's own writable layer held them - so every
+      # `up --force-recreate` or image change silently reinstalled MetaTrader
+      # from scratch.
+      #
+      # That is not hypothetical. On 2026-09-29 at 04:32 the container was
+      # recreated; terminal64.exe carries that timestamp. The reinstall pulled
+      # an unpinned installer, came up with a fresh `common.ini`, and therefore
+      # with AutoTrading off. The last trade closed at 04:35 and every order
+      # after it was refused with "AutoTrading disabled by client" until the
+      # toggle was pressed by hand on 2026-10-02 at 06:53. **Three days of a
+      # desk that decided correctly and could not act.**
+      #
+      # `ensure_algo_ini.py` now reasserts the switch before each launch, which
+      # closes that specific hole. This closes the class: a recreate stops being
+      # an MT5 reinstall. The login survives either way - it comes from
+      # MT5_LOGIN/MT5_PASSWORD/MT5_SERVER above, not from the prefix - so what
+      # was being lost was the install, the charts and the switch, not access.
+      #
+      # The first `up` after adding this still installs, because the volume
+      # starts empty. Every one after it does not.
+      - mt5-wineprefix:/opt/wineprefix
     restart: unless-stopped
     deploy:
       resources:
@@ -51,3 +82,9 @@ services:
           memory: 4G
         reservations:
           memory: 512M
+
+volumes:
+  # Named rather than a bind mount: the prefix is written by root inside the
+  # container, and a host directory would come out owned by root on the host
+  # and need chowning by hand on every machine this runs on.
+  mt5-wineprefix:
