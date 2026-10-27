@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   deploy:
-    name: Deploy to EC2
+    name: Deploy to the terminal host
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -100,11 +100,45 @@ jobs:
           script: |
             set -euo pipefail
             cd ${{ secrets.DEPLOY_PATH }}
-            # A deploy that reports success without checking is a deploy that
-            # reports success while the container restart-loops.
-            sleep 20
-            if ! docker compose ps --status running | grep -q mt5-terminal; then
-              docker compose logs --tail 50
-              exit 1
+
+            # ── Running is not the same as serving ────────────────────────
+            # `sleep 20` then one check was wrong twice over. MetaTrader runs
+            # under Wine and has to start a desktop session, install or load a
+            # 2.3GB prefix and log in to the broker; twenty seconds is not
+            # enough, so the check raced the thing it was checking. And a
+            # container that is *running* while its API is dead is the failure
+            # that matters here - the repository records three days of "a desk
+            # that decided correctly and could not act". So poll the API, with
+            # a bound, and print the logs on the way out.
+            deadline=$(( $(date +%s) + 300 ))
+            until curl -sf --max-time 5 -o /dev/null http://127.0.0.1:8000/; do
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "::error::the bridge did not answer on 127.0.0.1:8000 within 300s"
+                docker compose ps
+                docker compose logs --tail 80
+                exit 1
+              fi
+              sleep 5
+            done
+            echo "✅ the bridge answers on 127.0.0.1:8000"
+
+            # ── The desk reaches the bridge only through the tunnel ───────
+            # Loopback answering proves nothing about whether the trading box
+            # can see it: the port on that box is held open from here by a
+            # reverse SSH tunnel. Restarting the container does not restart
+            # the tunnel, so a deploy could leave a healthy terminal that the
+            # desk cannot reach - which looks like a broker outage, not a
+            # deploy problem. Checked, and nudged if the unit exists.
+            if systemctl list-unit-files mt5-tunnel.service >/dev/null 2>&1 \
+               && systemctl cat mt5-tunnel.service >/dev/null 2>&1; then
+              sudo systemctl restart mt5-tunnel.service || true
+              sleep 3
+              if systemctl is-active --quiet mt5-tunnel.service; then
+                echo "✅ mt5-tunnel.service is active"
+              else
+                echo "::warning::mt5-tunnel.service is not active - the desk cannot reach this bridge"
+                systemctl --no-pager status mt5-tunnel.service | head -15 || true
+              fi
+            else
+              echo "::warning::mt5-tunnel.service is not installed; run scripts/install-tunnel.sh"
             fi
-            echo "✅ mt5-terminal is running"
