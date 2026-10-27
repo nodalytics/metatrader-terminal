@@ -95,7 +95,16 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.8'
+          # 2.0, not 0.8. Measured 2026-10-27: with a live desk polling the
+          # bridge and the API's own background scheduler re-querying the trade
+          # table every 20s, 0.8 pegged the container at 74% of its allowance
+          # and the API stopped answering **on its own loopback** - which looks
+          # exactly like a dead tunnel from the trading box and is not one. At
+          # 2.0 the same load sits near 48% of the allowance.
+          #
+          # Memory is deliberately left at 4G: peak observed was 1.58GiB, so
+          # there is no measurement behind raising it.
+          cpus: '2.0'
           # 4G, not 1G. The terminal caches `MT5_MAX_BARS` bars per chart and a
           # deep history request marshals every bar through Python, so 1G is not
           # enough to serve one: a request for 100,000 hourly bars failed inside

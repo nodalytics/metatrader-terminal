@@ -42,5 +42,13 @@ exec ssh -N \
   -o ServerAliveCountMax=3 \
   -o TCPKeepAlive=yes \
   -o StrictHostKeyChecking=accept-new \
-  -R "${BIND}:${REMOTE_PORT}:localhost:${LOCAL_PORT}" \
+  # **127.0.0.1, not localhost.** The container publishes 8000 on IPv4
+  # loopback only, and ssh resolves this hostname on *this* side: where
+  # localhost resolves to ::1 first, every forwarded connection is refused and
+  # the tunnel comes up **bound and dead**. That failure passes every check
+  # short of an actual request - `systemctl is-active` says active, the
+  # listener appears on the right address on the remote, and the -R string in
+  # `ps` looks correct - while nothing flows. Measured 2026-10-27: the desk sat
+  # at "cannot attach" for 47 attempts against a listening socket.
+  -R "${BIND}:${REMOTE_PORT}:127.0.0.1:${LOCAL_PORT}" \
   "$REMOTE"
