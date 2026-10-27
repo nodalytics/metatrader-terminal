@@ -26,6 +26,7 @@ ENV HOME=/root \
 # MT5 Account Details (Provide at runtime)
 ENV MT5_LOGIN=0 \
     MT5_SERVER='' \
+    MT5_REQUIRE_ALGO=1 \
     VNC_USER=mt5_user \
     VNC_PASSWORD=password
 
