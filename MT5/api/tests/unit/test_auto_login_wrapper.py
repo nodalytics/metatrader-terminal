@@ -37,9 +37,10 @@ ALGO_NO_MT5 = "cannot reach MT5: No module named 'MetaTrader5'"
 
 #: A `wine` that answers for whichever script it was handed, and records the fact.
 #: Matching on the script name is the point: the wrapper must run the toggle only
-#: after the login has reported success.
+#: after the login has reported success. It matches `"$*"` rather than `"$2"`
+#: because the toggle is invoked `wine python -u <script>`.
 STUB = """#!/bin/bash
-case "$2" in
+case "$*" in
     *auto_login.py)
         printf '%s\\n' "$AUTO_LOGIN_SAYS"
         ;;

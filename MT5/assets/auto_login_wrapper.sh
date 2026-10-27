@@ -39,11 +39,18 @@ REQUIRE_ALGO=${MT5_REQUIRE_ALGO:-1}
 # verdict is therefore taken from what the script *said*, never from `$?` — a
 # hang would otherwise read as a pass — and the process is killed once it has
 # said it.
+#
+# `-u` because stdout is redirected to a file, so Python block-buffers it. The
+# script's verdicts are its last lines and would be flushed when the
+# interpreter exits, which is why the auto-login below can be watched the same
+# way without it - but resting a boot gate on that is too fine a point, and
+# unbuffered output also puts the attempt-by-attempt lines in the container log
+# where they are worth having.
 confirm_autotrading() {
     local round i pid
     for round in $(seq 1 "$ALGO_ROUNDS"); do
         : > "$ALGO_LOG"
-        wine python "$ASSETS/toggle_algo.py" >> "$ALGO_LOG" 2>&1 &
+        wine python -u "$ASSETS/toggle_algo.py" >> "$ALGO_LOG" 2>&1 &
         pid=$!
         for i in $(seq 1 "$ALGO_WAIT"); do
             if grep -q "AutoTrading is on" "$ALGO_LOG" 2>/dev/null; then
