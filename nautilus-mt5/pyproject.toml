@@ -1,0 +1,25 @@
+[project]
+name = "nautilus-mt5"
+version = "0.1.0"
+description = "A NautilusTrader adapter for MetaTrader 5, over the metatrader-terminal HTTP bridge."
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    # The engine. Pinned to a minor because the published docs describe an API
+    # rename that 1.221 has not shipped: it carries `LiveMarketDataClient`,
+    # `LiveExecutionClient` and `TradingNode`, which the docs call v1 names for
+    # `MarketDataClient`, `ExecutionClient` and `LiveNode`. Written against
+    # what is released.
+    "nautilus_trader>=1.221,<1.230",
+    "httpx>=0.28",
+]
+
+[project.urls]
+Homepage = "https://github.com/nodalytics/metatrader-terminal"
+
+[build-system]
+requires = ["uv_build>=0.9,<0.10"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
