@@ -5,6 +5,7 @@ from app.db.database import get_session
 from app.models.trade import Trade, TradeBase
 from app.services.mt5_service import mt5_service
 from app.models.trading import MarketOrderRequest, ModifySLTPRequest
+from app.utils.sent import DONE, checked
 from app.utils.exceptions import MT5SymbolNotFoundError, MT5OrderError
 from app.db import crud
 from app.utils import helpers
@@ -57,6 +58,12 @@ def send_order(
         magic=request.magic,
         type_filling=request.type_filling
     )
+    # **Before anything reads it, and before the row is written.** This route
+    # went straight to `result.price`, so a refused order was an
+    # `AttributeError` and a 500 - and a *rejected* order still wrote a trade
+    # row and answered `success: true`, leaving this service's own database
+    # carrying positions the account never held. See `utils/sent.py`.
+    result = checked(result, DONE, f"{request.order_type} {request.symbol}")
     info = mt5_service.get_symbol_info(request.symbol)
     contract_size = info.get('trade_contract_size', 100000)
     # The account's own leverage, not a constant. `capital` below is

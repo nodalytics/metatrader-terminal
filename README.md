@@ -466,6 +466,35 @@ any broker - both are the consumer's to interpret, where it can be tested.
 MT5 tick being a quote update: they read 0 or a constant 5000, and they are
 included so a consumer can confirm that rather than take it on trust.
 
+## ✅ A reply the client can trust
+
+Six routes used to end `{"success": True, "result": ...}` without looking at
+the terminal's retcode, so the field named `success` was true on every reply
+the route managed to produce. A client that moved a stop, closed a position or
+cancelled an order could not learn it had been refused - the retcode was in
+`result`, where only a client that remembered to look would find it.
+
+They now raise `400` with the terminal's own comment and code, which is what
+`/trading/modify-sl-tp` always did: a 4xx is handled by every HTTP client, and
+a 200 carrying a buried refusal is handled only by an attentive one.
+
+Two were worse than misleading:
+
+- **`POST /trading/order` wrote a trade row for a rejected order.** It read
+  `result.price` before any check, so a refusal (`None`) was a 500 - and when
+  the terminal refused with a code instead, the row was written anyway and the
+  reply said `success: true`. This service's own database carried positions
+  the account never held.
+- **`POST /positions/modify` had the same `None._asdict()` crash**, so a
+  refused stop move and a broken service looked identical from outside.
+
+`app/utils/sent.py` holds the reading, with the accepted codes as a named
+argument: a close or a cancel wants `DONE`, a pending placement wants
+`PLACED` - and also accepts `DONE`, because a limit at a price the market has
+already reached fills immediately, which a `PLACED`-only check would call a
+failure. Written out per route, the difference between those is a number
+nobody reviewing a diff would question.
+
 ## 🧪 Tests
 
 ```bash
