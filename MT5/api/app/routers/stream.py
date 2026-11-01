@@ -14,13 +14,29 @@ unchanged tick is a round trip spent finding out nothing.
     <- {"type": "positions", "positions": [...]}
     <- {"type": "account", "equity": 10002.5, ...}
 
-## MT5 has no push API, so this polls — once, centrally
+## Pushed where an EA is feeding, polled where one is not
 
-`symbol_info_tick` is a question, not a subscription; there is no callback to
-register. What changes here is *who* polls and how often the result travels: a
-single loop inside the process that already holds the terminal connection,
-pushing only when something is different, instead of N clients each asking over
-HTTP on their own timer.
+**MT5 has no push API on the Python side.** `symbol_info_tick` is a question,
+not a subscription, and there is no callback to register — which is why this
+route polled for everything and said so.
+
+Inside the terminal that limitation does not exist: `OnTick` is a real
+callback. So `MT5/ea/TillTickFeed.mq5` connects out to `services/feed.py` and
+pushes one line of JSON per tick, and this route prefers that where it is
+available. A symbol with an EA is **pushed at the rate the market moves**; a
+symbol without one is polled exactly as before, centrally, in the process that
+already holds the terminal connection.
+
+The difference is not latency alone. A poll is a *sample*: a quote that moved
+and moved back between two polls never happened as far as the consumer is
+concerned, and no interval fixes that. A push carries every tick the terminal
+saw, and the `seq` counter makes a lost frame visible rather than silent.
+
+**`source=ea` or `source=poll` is on every frame**, and a client asking for
+`require=ea` is refused rather than quietly polled. A consumer that asked for
+a push and silently got a sample would take every measurement on a feed that
+is not the one it believes it has, and nothing about the result would look
+wrong.
 
 **Only changes are sent**, and that is the property that makes this cheap
 rather than a firehose. A quiet symbol costs nothing; a busy one is sent as
@@ -55,6 +71,7 @@ from typing import Any, Dict, List, Optional, Set
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
+from app.services.feed import feed
 from app.services.mt5_service import mt5_service
 from app.utils.config import settings
 
@@ -152,11 +169,40 @@ async def _send(socket: WebSocket, payload: Dict[str, Any]) -> bool:
         return False
 
 
+async def _pump_pushed(socket: WebSocket, sub: Subscription) -> None:
+    """Relay the EA's frames, unfiltered, for the symbols this socket follows.
+
+    **No change filter, unlike the poll.** A poll that re-sent an unchanged
+    tick would be sending nothing, so it compares. A push has nothing to
+    compare: every frame is a tick the terminal actually saw, and dropping a
+    repeat would discard two ticks at one price - which is real, and is how
+    volume at a level accumulates.
+    """
+    queue = feed.subscribe()
+    try:
+        while True:
+            frame = await queue.get()
+            symbol = str(frame.get("symbol") or "")
+            if symbol not in sub.symbols:
+                continue
+            if not await _send(socket, frame):
+                return
+    finally:
+        feed.unsubscribe(queue)
+
+
 async def _pump_ticks(socket: WebSocket, sub: Subscription, interval: float) -> None:
-    """Push quotes for the followed symbols, whenever they differ."""
+    """Poll quotes for the followed symbols an EA is **not** feeding.
+
+    A symbol gains and loses its EA while this runs - a chart is closed, a
+    terminal restarts - so the set is re-read every pass rather than once at
+    subscribe time. The cost is a set lookup per symbol per pass; the
+    alternative is a symbol that falls silent when its EA goes away.
+    """
     while True:
+        pushed = feed.sources()
         for symbol in sorted(sub.symbols):
-            if symbol in sub.failed:
+            if symbol in sub.failed or symbol in pushed:
                 continue
             try:
                 tick = await run_in_threadpool(
@@ -177,8 +223,11 @@ async def _pump_ticks(socket: WebSocket, sub: Subscription, interval: float) -> 
             if sub.last_quote.get(symbol) == quote:
                 continue
             sub.last_quote[symbol] = quote
-            frame = {"type": "tick", "symbol": symbol}
+            # `source` on every frame, so a consumer never has to infer which
+            # feed it is reading. The push sets its own; this is the other.
+            frame = {"type": "tick", "symbol": symbol, "source": "poll"}
             frame.update(tick)
+            frame["source"] = "poll"
             if not await _send(socket, frame):
                 return
         await asyncio.sleep(interval)
@@ -263,6 +312,10 @@ async def stream(
     symbols: Optional[str] = Query(None, description="Comma-separated, to start immediately."),
     magic: Optional[int] = Query(None, description="Only positions carrying this magic."),
     interval: float = Query(TICK_INTERVAL, description="Seconds between quote polls."),
+    require: Optional[str] = Query(
+        None,
+        description="Set to `ea` to be refused unless every symbol has an EA pushing.",
+    ),
 ):
     """Quotes, positions and account state, pushed as they change."""
     header_key = websocket.headers.get("x-api-key")
@@ -278,12 +331,42 @@ async def stream(
     sub = Subscription()
     if symbols:
         sub.follow([s for s in symbols.split(",") if s.strip()])
+
+    pushed = feed.sources()
+    if str(require or "").lower() == "ea":
+        # **Refused rather than quietly polled.** A consumer that asked for a
+        # push and got a 0.25s sample would take every measurement on a feed
+        # that is not the one it thinks it has, and nothing about the answer
+        # would look wrong. Naming the symbols that are missing makes it a
+        # deployment problem - a chart that is not open - rather than a
+        # mystery.
+        missing = sorted(set(sub.symbols) - pushed)
+        if missing or not sub.symbols:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "message": "no EA is feeding these symbols",
+                    "symbols": missing or sorted(sub.symbols),
+                    "detail": "attach MT5/ea/TillTickFeed.mq5 to one chart per symbol",
+                }
+            )
+            await websocket.close(code=1008)
+            return
+
     await _send(
         websocket,
-        {"type": "ready", "symbols": sorted(sub.symbols), "interval": max(interval, MIN_INTERVAL)},
+        {
+            "type": "ready",
+            "symbols": sorted(sub.symbols),
+            "interval": max(interval, MIN_INTERVAL),
+            # So a consumer can tell, at connect time, which of its symbols it
+            # is about to be sampled on.
+            "pushed": sorted(set(sub.symbols) & pushed),
+        },
     )
 
     tasks = [
+        asyncio.create_task(_pump_pushed(websocket, sub)),
         asyncio.create_task(_pump_ticks(websocket, sub, max(interval, MIN_INTERVAL))),
         asyncio.create_task(_pump_state(websocket, magic)),
         asyncio.create_task(_read_commands(websocket, sub)),

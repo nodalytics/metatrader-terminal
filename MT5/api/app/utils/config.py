@@ -32,6 +32,20 @@ class EnvSettings(BaseSettings):
     # Auth Settings
     API_KEY_SEED: str = Field("", env="API_KEY_SEED")
 
+    # The EA tick feed. `MT5/ea/TillTickFeed.mq5` connects out to this
+    # listener and pushes one line of JSON per tick, which is the only way a
+    # push feed is possible at all: `symbol_info_tick` is a question and MT5
+    # gives the Python side no callback to register, while `OnTick` inside the
+    # terminal is a real one.
+    #
+    # Loopback by default and deliberately. The listener takes whatever
+    # connects to it as a tick producer - there is no authentication on a
+    # socket the terminal opens from inside this container - so it must not be
+    # reachable from outside it.
+    EA_FEED_ENABLED: bool = Field(True, env="EA_FEED_ENABLED")
+    EA_FEED_HOST: str = Field("127.0.0.1", env="EA_FEED_HOST")
+    EA_FEED_PORT: int = Field(18823, env="EA_FEED_PORT")
+
     class Config:
         env_file = ".env"
         extra = "ignore"

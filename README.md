@@ -393,6 +393,9 @@ The project uses the following key variables in your `.env`:
 | `MT5_API_PORT` | Port for the FastAPI service | `8000` |
 | `API_KEY_SEED` | Seed for API key authentication | - |
 | `MT5_SETUP_URL` | Installer to fetch, for pinning a terminal build | MetaQuotes' *latest* |
+| `EA_FEED_ENABLED` | Listen for `TillTickFeed.mq5`, so the stream pushes instead of polling | `true` |
+| `EA_FEED_HOST` | Where that listener binds. **Loopback.** | `127.0.0.1` |
+| `EA_FEED_PORT` | Its port, which the EA's `Port` input must match | `18823` |
 
 ### Pinning a terminal build
 
@@ -410,6 +413,58 @@ testing that hypothesis means installing a specific version. Point
 first launch, so it will not upgrade itself out from under the pin. And whatever
 is installed, `/health` reports `build`, so the version behind a regression is
 answerable from the data rather than from memory.
+
+## 📨 Pushing ticks instead of asking for them
+
+`/api/v1/stream` polled for everything, and said so in its own docstring: "MT5
+has no push API, so this polls." That is true of the **Python** side -
+`symbol_info_tick` is a question and there is no callback to register - and it
+is not true inside the terminal, where `OnTick` is a real callback.
+
+So the push starts there. `MT5/ea/TillTickFeed.mq5` connects out to a listener
+in this container and sends one line of JSON per tick; `/api/v1/stream` relays
+those frames to its consumers and keeps polling for every symbol no EA is
+feeding.
+
+**Why this matters more than latency.** A poll is a sample: a quote that moved
+and moved back between two polls never happened as far as a consumer is
+concerned, and a tighter interval still samples - it just costs the terminal
+more. A push carries every tick the terminal saw, and the EA's `seq` counter
+makes a *lost* frame visible, so a consumer can refill the window from
+`copy_ticks_range` instead of silently having a hole.
+
+### Setting it up
+
+1. Open MetaEditor in the container's VNC session, compile
+   `MT5/ea/TillTickFeed.mq5`.
+2. Tools → Options → Expert Advisors → allow `127.0.0.1`. MT5 checks that
+   allow-list for `SocketConnect`, not only for `WebRequest`, and a missing
+   entry is the usual reason the EA logs "cannot reach".
+3. Attach it to **one chart per symbol**. `OnTick` only fires for the chart's
+   own symbol, and the alternative - one EA calling `SymbolInfoTick` for others
+   on a timer - is polling again with extra steps.
+
+### Reading it
+
+Every frame carries `source`, `ea` or `poll`, so a consumer never has to infer
+which feed it is on. A client that must have the push asks for it:
+
+```
+ws://host:8000/api/v1/stream?symbols=EURUSD&require=ea
+```
+
+and is **refused**, naming the symbols that are missing, rather than quietly
+polled. A consumer that asked for a push and silently got a sample would take
+every measurement on a feed that is not the one it believes it has, and nothing
+about the result would look wrong.
+
+`flags` and `time_msc` are passed through untouched. MT5's tick flags carry an
+undocumented bit 128, so a one-sided revision is `flags in (4, 130)` and never
+`flags in (2, 4)`; and `time_msc` is broker server time, which is not UTC on
+any broker - both are the consumer's to interpret, where it can be tested.
+`last`, `volume` and `volume_real` are sent and are useless on this feed, an
+MT5 tick being a quote update: they read 0 or a constant 5000, and they are
+included so a consumer can confirm that rather than take it on trust.
 
 ## 🧪 Tests
 

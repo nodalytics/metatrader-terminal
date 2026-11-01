@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from app.routers import trading, auth, account, positions, symbols, history, terminal, orders, stream
 from app.dependencies.auth import verify_api_key
 from app.db.database import init_db
+from app.services.feed import feed
 from app.utils.config import settings
 from app.utils.exceptions import MT5BaseException
 from app.utils.logger import logger_instance
@@ -39,12 +40,32 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Background Scheduler...")
     scheduler.add_job(trailing_stop_handler, "interval", seconds=20)
     scheduler.start()
-    
+
+    # The EA's tick feed. Started here rather than lazily on a first
+    # subscriber because the EA connects out on its own schedule - it is
+    # attached to a chart and retries every second until something answers -
+    # so a listener that waited for a consumer would drop every tick until one
+    # arrived, and that consumer would see a push feed beginning mid-session.
+    if settings.env.EA_FEED_ENABLED:
+        try:
+            await feed.start(settings.env.EA_FEED_HOST, settings.env.EA_FEED_PORT)
+        except OSError as exc:
+            # A port already in use means a second API process, and the
+            # running one owns the feed. Loud rather than fatal: the poll
+            # still works, and refusing to serve at all over a feature that
+            # degrades would be the worse trade.
+            logger.error(
+                f"EA feed listener could not bind "
+                f"{settings.env.EA_FEED_HOST}:{settings.env.EA_FEED_PORT}: {exc}. "
+                f"/stream will poll instead of pushing."
+            )
+
     yield
-    
+
     # Shutdown event
     logger.info("Shutting down scheduler...")
     scheduler.shutdown()
+    await feed.stop()
 
 def create_app() -> FastAPI:
     app = FastAPI(
