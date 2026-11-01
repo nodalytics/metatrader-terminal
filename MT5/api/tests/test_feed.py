@@ -255,3 +255,34 @@ def test_the_tally_says_what_arrived_and_what_was_lost():
             await feed.stop()
 
     asyncio.run(run())
+
+
+def test_the_tally_answers_the_question_an_operator_actually_has():
+    """**"Is my EA working" has three failure modes that look identical.**
+
+    The EA is MQL5 compiled by hand in MetaEditor and attached to a chart: it
+    may not be compiled, the chart may not be open, or `127.0.0.1` may not be
+    in Tools -> Options -> Expert Advisors, which MT5 checks for
+    `SocketConnect` and not only for `WebRequest`. From a consumer's side all
+    three are the same thing - a symbol that is polled instead of pushed.
+
+    `symbols` separates them: a name is there only once a frame has arrived
+    for it. So an empty list with the listener up means nothing connected,
+    which is one of the three; a name present means the whole chain works.
+    """
+
+    async def run():
+        feed = Feed()
+        try:
+            await feed.start("127.0.0.1", 0)
+            # Listening, nothing connected: the EA is not running.
+            assert feed.tally["symbols"] == []
+            assert feed.tally["received"] == 0
+
+            await send(feed, frame(symbol="XAUUSD", seq=1))
+            await settle(lambda: feed.received >= 1)
+            assert feed.tally["symbols"] == ["XAUUSD"]
+        finally:
+            await feed.stop()
+
+    asyncio.run(run())

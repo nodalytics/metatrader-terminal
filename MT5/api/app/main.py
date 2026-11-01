@@ -164,6 +164,39 @@ def create_app() -> FastAPI:
         body["build"] = getattr(info, "build", None)
         return body
 
+    @app.get("/feed", tags=["System"])
+    def feed_status():
+        """Whether an EA is pushing ticks, and what it has sent.
+
+        **The one thing about the push feed that cannot be checked from
+        outside the container.** The EA is MQL5 compiled in MetaEditor and
+        attached to a chart by hand, and three separate things can silently
+        not be true: it may not be compiled, the chart may not be open, or
+        `127.0.0.1` may not be in Tools -> Options -> Expert Advisors, which
+        MT5 checks for `SocketConnect` and not only for `WebRequest`.
+
+        Every one of those looks identical from a consumer's side - a symbol
+        that is polled instead of pushed - and `/api/v1/stream` deliberately
+        does not fall back silently, so a client asking `require=ea` is
+        refused. This route is how an operator finds out *which* of the three
+        it is, in one request, instead of reading a terminal log through VNC.
+
+        `symbols` is the answer to "is my EA working": a name appears there
+        only once a frame has actually arrived for it, and leaves after two
+        minutes of silence. `gaps` is the answer to the question after that -
+        frames the EA stamped and that did not arrive, which is a tick the
+        consumer has to refill from `copy_ticks_range`.
+
+        Unprotected, like `/health` and for the same reason: a probe should
+        not need a credential to say whether the thing is working, and this
+        carries no account information.
+        """
+        return {
+            "enabled": settings.env.EA_FEED_ENABLED,
+            "listening": f"{settings.env.EA_FEED_HOST}:{settings.env.EA_FEED_PORT}",
+            **feed.tally,
+        }
+
     # Auth routes (Unprotected)
     app.include_router(auth.router, prefix="/api/v1")
 

@@ -444,6 +444,30 @@ makes a *lost* frame visible, so a consumer can refill the window from
    own symbol, and the alternative - one EA calling `SymbolInfoTick` for others
    on a timer - is polling again with extra steps.
 
+### Checking it
+
+**Three things can silently not be true** and they look identical from a
+consumer's side: the EA may not be compiled, the chart may not be open, or
+`127.0.0.1` may not be in Tools -> Options -> Expert Advisors - which MT5
+checks for `SocketConnect`, not only for `WebRequest`. In every case a symbol
+is quietly polled instead of pushed.
+
+```bash
+curl -s localhost:8000/feed
+# {"enabled":true,"listening":"127.0.0.1:18823","received":48213,
+#  "gaps":0,"dropped":0,"subscribers":1,"symbols":["EURUSD","XAUUSD"]}
+```
+
+`symbols` is the answer: a name appears there only once a frame has actually
+arrived for it, and leaves after two minutes of silence. An empty list with
+`enabled: true` means nothing connected. `gaps` is the question after that -
+frames the EA stamped that did not arrive, each one a tick a consumer has to
+refill from `copy_ticks_range`.
+
+Unprotected, like `/health` and for the same reason: a probe should not need a
+credential to say whether the thing is working, and it carries no account
+information.
+
 ### Reading it
 
 Every frame carries `source`, `ea` or `poll`, so a consumer never has to infer
