@@ -482,10 +482,29 @@ polled. A consumer that asked for a push and silently got a sample would take
 every measurement on a feed that is not the one it believes it has, and nothing
 about the result would look wrong.
 
-`flags` and `time_msc` are passed through untouched. MT5's tick flags carry an
-undocumented bit 128, so a one-sided revision is `flags in (4, 130)` and never
-`flags in (2, 4)`; and `time_msc` is broker server time, which is not UTC on
-any broker - both are the consumer's to interpret, where it can be tested.
+`flags` and `time_msc` are passed through untouched **on the push path**. MT5's
+tick flags carry an undocumented bit 128, so a one-sided revision is
+`flags in (4, 130)` and never `flags in (2, 4)`; and `time_msc` is broker
+server time, which is not UTC on any broker - both are the consumer's to
+interpret, where it can be tested.
+
+**The polled routes are not untouched, and the difference has cost a desk every
+bar it should have received.** `/symbols/rates/*` and `/symbols/ticks/*` build a
+DataFrame and run `pd.to_datetime` over `time` (and `time_msc` on ticks) before
+`to_dict`, so those fields serialise as **ISO strings** - `"2026-11-03T20:15:00"`
+- where the EA push sends the terminal's integer. A client that assumes MT5's
+native epoch, as one reasonably would from the paragraph above, raises
+`invalid literal for int() with base 10: '2026-11-...'` on every poll. It stays
+connected and healthy while doing it, so the symptom is a consumer that has
+quotes and no bars.
+
+The string is naive and is UTC, because pandas produced it from an epoch. A
+consumer should accept an integer, a float and an ISO string on these fields
+rather than branch on the route it called.
+
+Returning epochs everywhere would be the cleaner API and is **not** done here:
+it would break any client already parsing the strings. Documented instead, so
+the choice is visible.
 `last`, `volume` and `volume_real` are sent and are useless on this feed, an
 MT5 tick being a quote update: they read 0 or a constant 5000, and they are
 included so a consumer can confirm that rather than take it on trust.
