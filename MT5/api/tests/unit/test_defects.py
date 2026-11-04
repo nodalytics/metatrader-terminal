@@ -9,6 +9,75 @@ from __future__ import annotations
 import fake_mt5
 
 
+def test_the_deal_history_window_is_applied_whichever_spelling_asks_for_it(
+    app_client, terminal
+):
+    """A dropped range parameter silently became 30 days of history.
+
+    `/history/deals` declared `from_date`/`to_date` while
+    `/symbols/ticks/{s}/range` and `/symbols/rates/from` declare
+    `date_from`/`date_to`. FastAPI drops an unrecognised query parameter
+    without complaint, and `HistoryService` then substitutes
+    `now - timedelta(days=30)` - so a client using the symbols spelling asked
+    for an hour and received a month, with a 200 and no warning.
+
+    Measured against a live terminal on 2026-11-04: `from_date` gave **0**
+    deals for the last hour, which was right, and `date_from` gave **4,013**
+    over 30 days.
+
+    **A status code cannot catch this.** The existing integration tests assert
+    `200`, which both spellings returned. So this asserts the dates that
+    reached `history_deals_get`, which is the only place the truth is.
+    """
+    asked = {"date_from": "2026-03-01T00:00:00", "date_to": "2026-03-02T00:00:00"}
+    assert app_client.get("/api/v1/history/deals", params=asked).status_code == 200
+
+    sent = [call for call in terminal.calls if call[0] == "history_deals_get"]
+    assert sent, f"the route answered without asking the terminal: {terminal.calls}"
+    start, end = sent[-1][1][0], sent[-1][1][1]
+    assert (start.year, start.month, start.day) == (2026, 3, 1), (
+        f"asked from 2026-03-01 and the terminal was asked from {start} - an "
+        f"unrecognised parameter was dropped and the 30-day default used"
+    )
+    assert (end.year, end.month, end.day) == (2026, 3, 2), end
+    assert (end - start).days == 1, f"a one-day window arrived as {end - start}"
+
+
+def test_the_documented_spelling_still_works_and_wins(app_client, terminal):
+    """**The control.** Without it, "both spellings work" is indistinguishable
+    from "the alias replaced the documented name"."""
+    asked = {
+        "from_date": "2026-05-01T00:00:00",
+        "to_date": "2026-05-02T00:00:00",
+        # Sent together on purpose: an explicit `from_date` is the documented
+        # name and has to win rather than race.
+        "date_from": "2020-01-01T00:00:00",
+    }
+    assert app_client.get("/api/v1/history/deals", params=asked).status_code == 200
+
+    start = [c for c in terminal.calls if c[0] == "history_deals_get"][-1][1][0]
+    assert start.year == 2026, f"the alias overrode the documented name: {start}"
+
+
+def test_an_omitted_window_is_thirty_days_and_not_all_history(app_client, terminal):
+    """What the default actually is, asserted rather than assumed.
+
+    `tests/test_history.py` described this case as "defaults to all history",
+    which is wrong by a factor of however long the account has existed. A
+    caller relying on that reads a truncated book and cannot tell.
+    """
+    from datetime import datetime
+
+    assert app_client.get("/api/v1/history/deals").status_code == 200
+
+    start, end = [c for c in terminal.calls if c[0] == "history_deals_get"][-1][1][:2]
+    assert 29 <= (end - start).days <= 30, (
+        f"the undocumented default window is {(end - start).days} days; if this "
+        f"changes, every caller that omits a range changes with it"
+    )
+    assert (datetime.now() - end).total_seconds() < 300, "the window should end about now"
+
+
 def test_positions_can_be_filtered_by_magic(app_client, terminal):
     """`positions_get` does not take a `magic` keyword, and never has.
 

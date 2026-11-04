@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from app.services.mt5_service import mt5_service
 from app.models.trading import ModifySLTPRequest
 from app.utils.exceptions import MT5SymbolNotFoundError
+from app.utils.sent import DONE, answered
 from typing import Optional
 import MetaTrader5 as mt5
 
@@ -16,7 +17,10 @@ def get_positions(magic: Optional[int] = None):
 @router.post("/close")
 def close_position(ticket: int, volume: Optional[float] = None, type_filling: str = "FOK"):
     result = mt5_service.close_position(ticket, volume=volume, type_filling=type_filling)
-    return {"success": True, "result": result._asdict()}
+    # **The one where a false success costs the most.** A client told its
+    # close succeeded stops watching the position, and a position nobody is
+    # watching is one whose stop nobody is moving.
+    return answered(result, DONE, f"close of {ticket}")
 
 
 @router.post("/close_all")
@@ -41,7 +45,11 @@ def modify_position(request: ModifySLTPRequest):
     that already use it.
     """
     result = mt5_service.modify_sl_tp(request.ticket, request.sl, request.tp)
-    return {"success": True, "result": result._asdict()}
+    # **Checked, not assumed.** This returned `success: true` on every reply
+    # it managed to produce, so a client that moved a stop could not tell the
+    # terminal had refused - and `modify_sl_tp` returns `None` when it does,
+    # which made `result._asdict()` a 500. See `utils/sent.py`.
+    return answered(result, DONE, f"modify of {request.ticket}")
 
 
 @router.get("/by_symbol/{symbol}")

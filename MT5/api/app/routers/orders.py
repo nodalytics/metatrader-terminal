@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, status
 from app.services.mt5_service import mt5_service
 from app.models.trading import PendingOrderRequest, ModifyPendingOrderRequest
+from app.utils.sent import DONE, PLACED, answered
 from typing import Optional
 import MetaTrader5 as mt5
 
@@ -33,7 +34,11 @@ def send_pending_order(request: PendingOrderRequest):
         type_time=request.type_time,
         expiration=request.expiration,
     )
-    return {"success": True, "result": result._asdict()}
+    # `PLACED` and not `DONE`: a pending order's success is that it rests.
+    # `DONE` is accepted too, because a limit at a price the market has
+    # already reached fills immediately - the best available outcome, which a
+    # `PLACED`-only check would report as a failure. See `utils/sent.py`.
+    return answered(result, PLACED, f"pending {request.order_type} {request.symbol}")
 
 
 @router.put("/{ticket}")
@@ -46,13 +51,16 @@ def modify_pending_order(ticket: int, request: ModifyPendingOrderRequest):
         type_time=request.type_time,
         expiration=request.expiration,
     )
-    return {"success": True, "result": result._asdict()}
+    return answered(result, DONE, f"modify of order {ticket}")
 
 
 @router.delete("/{ticket}")
 def cancel_order(ticket: int):
     result = mt5_service.cancel_order(ticket)
-    return {"success": True, "result": result._asdict()}
+    # A cancel that the terminal refused used to answer `success: true`, so a
+    # client would report an order gone while it was still working - and then
+    # be surprised by its fill.
+    return answered(result, DONE, f"cancel of order {ticket}")
 
 
 @router.get("/calc/margin")

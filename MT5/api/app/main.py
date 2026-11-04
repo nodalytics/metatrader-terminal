@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from app.routers import trading, auth, account, positions, symbols, history, terminal, orders, stream
 from app.dependencies.auth import verify_api_key
 from app.db.database import init_db
+from app.services.feed import feed
 from app.utils.config import settings
 from app.utils.exceptions import MT5BaseException
 from app.utils.logger import logger_instance
@@ -39,12 +40,32 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Background Scheduler...")
     scheduler.add_job(trailing_stop_handler, "interval", seconds=20)
     scheduler.start()
-    
+
+    # The EA's tick feed. Started here rather than lazily on a first
+    # subscriber because the EA connects out on its own schedule - it is
+    # attached to a chart and retries every second until something answers -
+    # so a listener that waited for a consumer would drop every tick until one
+    # arrived, and that consumer would see a push feed beginning mid-session.
+    if settings.env.EA_FEED_ENABLED:
+        try:
+            await feed.start(settings.env.EA_FEED_HOST, settings.env.EA_FEED_PORT)
+        except OSError as exc:
+            # A port already in use means a second API process, and the
+            # running one owns the feed. Loud rather than fatal: the poll
+            # still works, and refusing to serve at all over a feature that
+            # degrades would be the worse trade.
+            logger.error(
+                f"EA feed listener could not bind "
+                f"{settings.env.EA_FEED_HOST}:{settings.env.EA_FEED_PORT}: {exc}. "
+                f"/stream will poll instead of pushing."
+            )
+
     yield
-    
+
     # Shutdown event
     logger.info("Shutting down scheduler...")
     scheduler.shutdown()
+    await feed.stop()
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -143,6 +164,39 @@ def create_app() -> FastAPI:
         body["build"] = getattr(info, "build", None)
         return body
 
+    @app.get("/feed", tags=["System"])
+    def feed_status():
+        """Whether an EA is pushing ticks, and what it has sent.
+
+        **The one thing about the push feed that cannot be checked from
+        outside the container.** The EA is MQL5 compiled in MetaEditor and
+        attached to a chart by hand, and three separate things can silently
+        not be true: it may not be compiled, the chart may not be open, or
+        `127.0.0.1` may not be in Tools -> Options -> Expert Advisors, which
+        MT5 checks for `SocketConnect` and not only for `WebRequest`.
+
+        Every one of those looks identical from a consumer's side - a symbol
+        that is polled instead of pushed - and `/api/v1/stream` deliberately
+        does not fall back silently, so a client asking `require=ea` is
+        refused. This route is how an operator finds out *which* of the three
+        it is, in one request, instead of reading a terminal log through VNC.
+
+        `symbols` is the answer to "is my EA working": a name appears there
+        only once a frame has actually arrived for it, and leaves after two
+        minutes of silence. `gaps` is the answer to the question after that -
+        frames the EA stamped and that did not arrive, which is a tick the
+        consumer has to refill from `copy_ticks_range`.
+
+        Unprotected, like `/health` and for the same reason: a probe should
+        not need a credential to say whether the thing is working, and this
+        carries no account information.
+        """
+        return {
+            "enabled": settings.env.EA_FEED_ENABLED,
+            "listening": f"{settings.env.EA_FEED_HOST}:{settings.env.EA_FEED_PORT}",
+            **feed.tally,
+        }
+
     # Auth routes (Unprotected)
     app.include_router(auth.router, prefix="/api/v1")
 
@@ -188,8 +242,19 @@ def create_app() -> FastAPI:
     # well. See `stream._authorised`.
     app.include_router(stream.router, prefix="/api/v1")
 
-    @app.api_route("/", methods=["GET", "HEAD"], tags=["System"])
+    # **Two registrations, not one `api_route` with both methods.** FastAPI
+    # derives an operation ID from the route's name and the *first* of its
+    # methods, so `methods=["GET", "HEAD"]` emitted two operations claiming
+    # `read_root__get` and the generated spec warned
+    # `Duplicate Operation ID` - which collides in any client generated from
+    # it. HEAD is here for probes that do not want a body and is kept out of
+    # the schema, so the document describes one root operation.
+    @app.get("/", tags=["System"], operation_id="read_root")
     def read_root():
+        return {"message": "Welcome to MetaTrader 5 API", "docs": "/docs"}
+
+    @app.head("/", tags=["System"], include_in_schema=False)
+    def head_root():
         return {"message": "Welcome to MetaTrader 5 API", "docs": "/docs"}
 
     # Instrument FastAPI

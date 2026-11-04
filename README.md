@@ -232,12 +232,37 @@ tells you less than one that reports the terminal is missing.
 | POST | `/api/v1/symbols/book/{symbol}/unsubscribe` | Unsubscribe from depth |
 | GET | `/api/v1/symbols/book/{symbol}` | Get current depth snapshot |
 
+> [!WARNING]
+> **Do not poll `/symbols/{symbol}` for a quote.** `symbol_info` returns the
+> symbol's *specification*, and the `bid`/`ask` on it is a snapshot the terminal
+> refreshes on its own terms. Measured 2026-11-04: eight reads three seconds
+> apart returned the same bid, the same ask **and the same `time`**, while
+> `/symbols/ticks/{symbol}` moved on every one.
+>
+> A client that polled the specification published **7 quotes from 2,399
+> polls** - one per symbol, and then nothing, because its de-duplication was
+> correctly suppressing a price that never changed. Nothing raised and nothing
+> warned; the feed simply read as a market nobody was quoting.
+>
+> For a sampled quote use **`/symbols/ticks/{symbol}`** (`symbol_info_tick`,
+> the latest tick). For a complete one use the **EA push** below - a poll is a
+> sample, and two ticks inside one interval arrive as the later of them.
+
 ### Trading
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
 | POST | `/api/v1/trading/order` | Place market order (BUY/SELL) |
 | POST | `/api/v1/trading/modify-sl-tp` | Modify SL/TP on open position |
 | GET | `/api/v1/trading/order_check/{symbol}` | Check if symbol is tradeable |
+
+> [!IMPORTANT]
+> **`type_filling` is a property of the symbol, not a preference.** Read
+> `filling_mode` from the symbol and pick from it: bit 1 is `FOK`, bit 2 `IOC`,
+> bit 4 `RETURN`. Every symbol on the Deriv demo account reports
+> `filling_mode=1` - **FOK only** - and sending `IOC` returns
+> `10030, Unsupported filling mode` on **every** market order. Measured
+> 2026-11-04 on EURUSD: `FOK` filled at retcode 10009, `IOC` and `RETURN` were
+> both refused.
 
 ### Orders (Pending)
 | Method | Endpoint | Description |
@@ -258,6 +283,14 @@ tells you less than one that reports the terminal is missing.
 | POST | `/api/v1/positions/close` | Close position (full or partial via `volume` param) |
 | POST | `/api/v1/positions/close_all` | Close all positions |
 | POST | `/api/v1/positions/modify` | Move a stop or target, **by ticket** |
+
+> [!IMPORTANT]
+> **`/positions/close` and `/positions/close_all` take query parameters, not a
+> JSON body.** They declare `ticket`, `volume` and `type_filling` as plain
+> function arguments with no request model, so a body gives
+> `422 field required` for `query.ticket`. They are the only write routes shaped
+> that way: `/trading/order` takes `MarketOrderRequest`, `/positions/modify`
+> takes `ModifySLTPRequest` and `/orders/pending` takes `PendingOrderRequest`.
 
 > [!NOTE]
 > `GET /api/v1/positions/?magic=...` filters to positions carrying that magic
@@ -338,6 +371,20 @@ cannot set headers on a WebSocket handshake.
 | GET | `/api/v1/history/orders` | Order history |
 | GET | `/api/v1/history/order_by_ticket/{ticket}` | Single order by ticket |
 
+> [!IMPORTANT]
+> **These routes spell the range `from_date` / `to_date`**, while
+> `/symbols/ticks/{symbol}/range` and `/symbols/rates/from` spell it
+> `date_from` / `date_to`. FastAPI drops an unrecognised query parameter
+> silently and `HistoryService` then substitutes **`now - 30 days`**, so a
+> client using the symbol spelling asked for one hour and received a month,
+> with a `200` and nothing to indicate the window had been ignored. Measured
+> 2026-11-04: 0 deals for the correct spelling against **4,013** for the wrong
+> one.
+>
+> Both spellings are now accepted and an explicit `from_date` wins. An omitted
+> range is **30 days**, not all history, and the 30-day payload on
+> `/history/orders` is about 1MB and has come back unparseable once.
+
 > [!TIP]
 > Full interactive docs with request/response schemas are available at `/docs` (Swagger UI) once the API is running.
 
@@ -393,6 +440,9 @@ The project uses the following key variables in your `.env`:
 | `MT5_API_PORT` | Port for the FastAPI service | `8000` |
 | `API_KEY_SEED` | Seed for API key authentication | - |
 | `MT5_SETUP_URL` | Installer to fetch, for pinning a terminal build | MetaQuotes' *latest* |
+| `EA_FEED_ENABLED` | Listen for `TillTickFeed.mq5`, so the stream pushes instead of polling | `true` |
+| `EA_FEED_HOST` | Where that listener binds. **Loopback.** | `127.0.0.1` |
+| `EA_FEED_PORT` | Its port, which the EA's `Port` input must match | `18823` |
 
 ### Pinning a terminal build
 
@@ -410,6 +460,130 @@ testing that hypothesis means installing a specific version. Point
 first launch, so it will not upgrade itself out from under the pin. And whatever
 is installed, `/health` reports `build`, so the version behind a regression is
 answerable from the data rather than from memory.
+
+## 📨 Pushing ticks instead of asking for them
+
+`/api/v1/stream` polled for everything, and said so in its own docstring: "MT5
+has no push API, so this polls." That is true of the **Python** side -
+`symbol_info_tick` is a question and there is no callback to register - and it
+is not true inside the terminal, where `OnTick` is a real callback.
+
+So the push starts there. `MT5/ea/TillTickFeed.mq5` connects out to a listener
+in this container and sends one line of JSON per tick; `/api/v1/stream` relays
+those frames to its consumers and keeps polling for every symbol no EA is
+feeding.
+
+**Why this matters more than latency.** A poll is a sample: a quote that moved
+and moved back between two polls never happened as far as a consumer is
+concerned, and a tighter interval still samples - it just costs the terminal
+more. A push carries every tick the terminal saw, and the EA's `seq` counter
+makes a *lost* frame visible, so a consumer can refill the window from
+`copy_ticks_range` instead of silently having a hole.
+
+### Setting it up
+
+1. Open MetaEditor in the container's VNC session, compile
+   `MT5/ea/TillTickFeed.mq5`.
+2. Tools → Options → Expert Advisors → allow `127.0.0.1`. MT5 checks that
+   allow-list for `SocketConnect`, not only for `WebRequest`, and a missing
+   entry is the usual reason the EA logs "cannot reach".
+3. Attach it to **one chart per symbol**. `OnTick` only fires for the chart's
+   own symbol, and the alternative - one EA calling `SymbolInfoTick` for others
+   on a timer - is polling again with extra steps.
+
+### Checking it
+
+**Three things can silently not be true** and they look identical from a
+consumer's side: the EA may not be compiled, the chart may not be open, or
+`127.0.0.1` may not be in Tools -> Options -> Expert Advisors - which MT5
+checks for `SocketConnect`, not only for `WebRequest`. In every case a symbol
+is quietly polled instead of pushed.
+
+```bash
+curl -s localhost:8000/feed
+# {"enabled":true,"listening":"127.0.0.1:18823","received":48213,
+#  "gaps":0,"dropped":0,"subscribers":1,"symbols":["EURUSD","XAUUSD"]}
+```
+
+`symbols` is the answer: a name appears there only once a frame has actually
+arrived for it, and leaves after two minutes of silence. An empty list with
+`enabled: true` means nothing connected. `gaps` is the question after that -
+frames the EA stamped that did not arrive, each one a tick a consumer has to
+refill from `copy_ticks_range`.
+
+Unprotected, like `/health` and for the same reason: a probe should not need a
+credential to say whether the thing is working, and it carries no account
+information.
+
+### Reading it
+
+Every frame carries `source`, `ea` or `poll`, so a consumer never has to infer
+which feed it is on. A client that must have the push asks for it:
+
+```
+ws://host:8000/api/v1/stream?symbols=EURUSD&require=ea
+```
+
+and is **refused**, naming the symbols that are missing, rather than quietly
+polled. A consumer that asked for a push and silently got a sample would take
+every measurement on a feed that is not the one it believes it has, and nothing
+about the result would look wrong.
+
+`flags` and `time_msc` are passed through untouched **on the push path**. MT5's
+tick flags carry an undocumented bit 128, so a one-sided revision is
+`flags in (4, 130)` and never `flags in (2, 4)`; and `time_msc` is broker
+server time, which is not UTC on any broker - both are the consumer's to
+interpret, where it can be tested.
+
+**The polled routes are not untouched, and the difference has cost a desk every
+bar it should have received.** `/symbols/rates/*` and `/symbols/ticks/*` build a
+DataFrame and run `pd.to_datetime` over `time` (and `time_msc` on ticks) before
+`to_dict`, so those fields serialise as **ISO strings** - `"2026-11-03T20:15:00"`
+- where the EA push sends the terminal's integer. A client that assumes MT5's
+native epoch, as one reasonably would from the paragraph above, raises
+`invalid literal for int() with base 10: '2026-11-...'` on every poll. It stays
+connected and healthy while doing it, so the symptom is a consumer that has
+quotes and no bars.
+
+The string is naive and is UTC, because pandas produced it from an epoch. A
+consumer should accept an integer, a float and an ISO string on these fields
+rather than branch on the route it called.
+
+Returning epochs everywhere would be the cleaner API and is **not** done here:
+it would break any client already parsing the strings. Documented instead, so
+the choice is visible.
+`last`, `volume` and `volume_real` are sent and are useless on this feed, an
+MT5 tick being a quote update: they read 0 or a constant 5000, and they are
+included so a consumer can confirm that rather than take it on trust.
+
+## ✅ A reply the client can trust
+
+Six routes used to end `{"success": True, "result": ...}` without looking at
+the terminal's retcode, so the field named `success` was true on every reply
+the route managed to produce. A client that moved a stop, closed a position or
+cancelled an order could not learn it had been refused - the retcode was in
+`result`, where only a client that remembered to look would find it.
+
+They now raise `400` with the terminal's own comment and code, which is what
+`/trading/modify-sl-tp` always did: a 4xx is handled by every HTTP client, and
+a 200 carrying a buried refusal is handled only by an attentive one.
+
+Two were worse than misleading:
+
+- **`POST /trading/order` wrote a trade row for a rejected order.** It read
+  `result.price` before any check, so a refusal (`None`) was a 500 - and when
+  the terminal refused with a code instead, the row was written anyway and the
+  reply said `success: true`. This service's own database carried positions
+  the account never held.
+- **`POST /positions/modify` had the same `None._asdict()` crash**, so a
+  refused stop move and a broken service looked identical from outside.
+
+`app/utils/sent.py` holds the reading, with the accepted codes as a named
+argument: a close or a cancel wants `DONE`, a pending placement wants
+`PLACED` - and also accepts `DONE`, because a limit at a price the market has
+already reached fills immediately, which a `PLACED`-only check would call a
+failure. Written out per route, the difference between those is a number
+nobody reviewing a diff would question.
 
 ## 🧪 Tests
 

@@ -9,3 +9,13 @@ logs/
 MT5/api/.venv/
 MT5/api/mt5_api/
 MT5/api/logs/
+
+# **Every env file, not just `.env`.** `MT5/.env.env.bak` was tracked in this
+# public repository and carried the live `VNC_PASSWORD` - the container
+# publishes VNC on 0.0.0.0:6901, so that is a reachable service with its
+# password in public history. `.env` alone did not match the name.
+.env*
+!.env.example
+!**/.env.example
+.remember/
+.pytest_cache/

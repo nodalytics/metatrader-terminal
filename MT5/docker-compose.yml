@@ -49,7 +49,10 @@ services:
       # `mt5setup.exe`, which is whatever MetaQuotes ships today - and the
       # Python package is pinned at MetaTrader5==5.0.5640, so a terminal build
       # the package cannot talk to takes the desk's broker away with it. Build
-      # 6140 is known good and 6204 is known bad; 6230 is serving now. Empty is
+      # 6140 is known good and 6204 is known bad; **6231 is serving now and
+      # works** - `/health` reports `connected: true, trade_allowed: true` on
+      # it against the pinned 5.0.5640, so the binding's IPC is not simply
+      # broken by everything newer than 6140. Empty is
       # the default because a URL that 404s stops the terminal installing at
       # all, which is worse - but pin it before any deliberate reinstall.
       MT5_SETUP_URL: ${MT5_SETUP_URL:-}
