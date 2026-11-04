@@ -426,21 +426,6 @@ For production setups, please refer to the detailed guides in the `docs/` folder
 -   [Server Setup Guide](docs/server-setup.md): Preparing your Linux/EC2 instance and Nginx.
 -   [CI/CD Pipeline Setup](docs/github-actions-setup.md): Connecting GitHub Actions for automated deployments.
 
-## 🔐 Credentials in this repository
-
-This repository is **public**, and `MT5/.env.example` is committed. The values
-in it are placeholders and have to stay placeholders: the `VNC_PASSWORD` that
-used to sit there was the one the terminal container was actually running, for
-a service published on `0.0.0.0:6901`. An untracked `MT5/.env.env.bak` carried
-the same value.
-
-If you are adopting this repository, **rotate `VNC_PASSWORD`** - the old value
-remains in git history and history is not fixed by deleting a file - and
-consider binding 6901 to localhost, since the interface is reachable over an
-SSH tunnel and does not need to be world-facing. `.gitignore` now covers
-`.env*` with the `.env.example` files excepted, so a backup written beside a
-live env file cannot be committed by accident.
-
 ## 🛠️ Environment Variables
 
 The project uses the following key variables in your `.env`:

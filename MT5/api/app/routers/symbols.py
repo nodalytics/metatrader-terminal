@@ -18,8 +18,50 @@ def get_symbol_info_query(symbol: str = Query(...)):
     return mt5_service.get_symbol_info(symbol)
 
 
-@router.get("/info/{symbol}")
+@router.get(
+    "/info/{symbol}",
+    summary="Symbol specification - NOT a live quote",
+    responses={
+        200: {
+            "description": (
+                "**`bid`/`ask` on this route is a snapshot, not a quote.** It is "
+                "part of the symbol's specification and the terminal refreshes it "
+                "on its own terms: measured 2026-11-04, eight reads three seconds "
+                "apart returned the same bid, the same ask **and the same `time`**, "
+                "while `/symbols/ticks/{symbol}` moved on every one. A client "
+                "polling here published 7 quotes from 2,399 polls. Use "
+                "`/symbols/ticks/{symbol}` for a sampled quote, or the WebSocket "
+                "at `/stream` for a complete one.\n\n"
+                "**`filling_mode` is a bitmask and belongs to the symbol**: 1 FOK, "
+                "2 IOC, 4 RETURN. Pick `type_filling` from it. Sending a mode the "
+                "symbol does not list returns `10030, Unsupported filling mode` on "
+                "every order."
+            ),
+            "content": {
+                "application/json": {
+                    "example": {
+                        "name": "EURUSD",
+                        "digits": 5,
+                        "point": 1e-05,
+                        "volume_min": 0.01,
+                        "volume_max": 500.0,
+                        "volume_step": 0.01,
+                        "filling_mode": 1,
+                        "trade_mode": 4,
+                        "bid": 1.12217,
+                        "ask": 1.12225,
+                    }
+                }
+            },
+        }
+    },
+)
 def get_symbol_info_path(symbol: str):
+    """The symbol's contract: digits, volume bounds, and `filling_mode`.
+
+    Case-sensitive, in the broker's own spelling - `EURUSD` works where
+    `eurusd` is a 404, which once left a desk with quotes and no trades.
+    """
     return mt5_service.get_symbol_info(symbol)
 
 

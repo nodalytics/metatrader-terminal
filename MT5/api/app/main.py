@@ -242,8 +242,19 @@ def create_app() -> FastAPI:
     # well. See `stream._authorised`.
     app.include_router(stream.router, prefix="/api/v1")
 
-    @app.api_route("/", methods=["GET", "HEAD"], tags=["System"])
+    # **Two registrations, not one `api_route` with both methods.** FastAPI
+    # derives an operation ID from the route's name and the *first* of its
+    # methods, so `methods=["GET", "HEAD"]` emitted two operations claiming
+    # `read_root__get` and the generated spec warned
+    # `Duplicate Operation ID` - which collides in any client generated from
+    # it. HEAD is here for probes that do not want a body and is kept out of
+    # the schema, so the document describes one root operation.
+    @app.get("/", tags=["System"], operation_id="read_root")
     def read_root():
+        return {"message": "Welcome to MetaTrader 5 API", "docs": "/docs"}
+
+    @app.head("/", tags=["System"], include_in_schema=False)
+    def head_root():
         return {"message": "Welcome to MetaTrader 5 API", "docs": "/docs"}
 
     # Instrument FastAPI
