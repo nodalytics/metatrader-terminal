@@ -232,12 +232,37 @@ tells you less than one that reports the terminal is missing.
 | POST | `/api/v1/symbols/book/{symbol}/unsubscribe` | Unsubscribe from depth |
 | GET | `/api/v1/symbols/book/{symbol}` | Get current depth snapshot |
 
+> [!WARNING]
+> **Do not poll `/symbols/{symbol}` for a quote.** `symbol_info` returns the
+> symbol's *specification*, and the `bid`/`ask` on it is a snapshot the terminal
+> refreshes on its own terms. Measured 2026-11-04: eight reads three seconds
+> apart returned the same bid, the same ask **and the same `time`**, while
+> `/symbols/ticks/{symbol}` moved on every one.
+>
+> A client that polled the specification published **7 quotes from 2,399
+> polls** - one per symbol, and then nothing, because its de-duplication was
+> correctly suppressing a price that never changed. Nothing raised and nothing
+> warned; the feed simply read as a market nobody was quoting.
+>
+> For a sampled quote use **`/symbols/ticks/{symbol}`** (`symbol_info_tick`,
+> the latest tick). For a complete one use the **EA push** below - a poll is a
+> sample, and two ticks inside one interval arrive as the later of them.
+
 ### Trading
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
 | POST | `/api/v1/trading/order` | Place market order (BUY/SELL) |
 | POST | `/api/v1/trading/modify-sl-tp` | Modify SL/TP on open position |
 | GET | `/api/v1/trading/order_check/{symbol}` | Check if symbol is tradeable |
+
+> [!IMPORTANT]
+> **`type_filling` is a property of the symbol, not a preference.** Read
+> `filling_mode` from the symbol and pick from it: bit 1 is `FOK`, bit 2 `IOC`,
+> bit 4 `RETURN`. Every symbol on the Deriv demo account reports
+> `filling_mode=1` - **FOK only** - and sending `IOC` returns
+> `10030, Unsupported filling mode` on **every** market order. Measured
+> 2026-11-04 on EURUSD: `FOK` filled at retcode 10009, `IOC` and `RETURN` were
+> both refused.
 
 ### Orders (Pending)
 | Method | Endpoint | Description |
@@ -258,6 +283,14 @@ tells you less than one that reports the terminal is missing.
 | POST | `/api/v1/positions/close` | Close position (full or partial via `volume` param) |
 | POST | `/api/v1/positions/close_all` | Close all positions |
 | POST | `/api/v1/positions/modify` | Move a stop or target, **by ticket** |
+
+> [!IMPORTANT]
+> **`/positions/close` and `/positions/close_all` take query parameters, not a
+> JSON body.** They declare `ticket`, `volume` and `type_filling` as plain
+> function arguments with no request model, so a body gives
+> `422 field required` for `query.ticket`. They are the only write routes shaped
+> that way: `/trading/order` takes `MarketOrderRequest`, `/positions/modify`
+> takes `ModifySLTPRequest` and `/orders/pending` takes `PendingOrderRequest`.
 
 > [!NOTE]
 > `GET /api/v1/positions/?magic=...` filters to positions carrying that magic
@@ -338,6 +371,20 @@ cannot set headers on a WebSocket handshake.
 | GET | `/api/v1/history/orders` | Order history |
 | GET | `/api/v1/history/order_by_ticket/{ticket}` | Single order by ticket |
 
+> [!IMPORTANT]
+> **These routes spell the range `from_date` / `to_date`**, while
+> `/symbols/ticks/{symbol}/range` and `/symbols/rates/from` spell it
+> `date_from` / `date_to`. FastAPI drops an unrecognised query parameter
+> silently and `HistoryService` then substitutes **`now - 30 days`**, so a
+> client using the symbol spelling asked for one hour and received a month,
+> with a `200` and nothing to indicate the window had been ignored. Measured
+> 2026-11-04: 0 deals for the correct spelling against **4,013** for the wrong
+> one.
+>
+> Both spellings are now accepted and an explicit `from_date` wins. An omitted
+> range is **30 days**, not all history, and the 30-day payload on
+> `/history/orders` is about 1MB and has come back unparseable once.
+
 > [!TIP]
 > Full interactive docs with request/response schemas are available at `/docs` (Swagger UI) once the API is running.
 
@@ -378,6 +425,21 @@ For production setups, please refer to the detailed guides in the `docs/` folder
 
 -   [Server Setup Guide](docs/server-setup.md): Preparing your Linux/EC2 instance and Nginx.
 -   [CI/CD Pipeline Setup](docs/github-actions-setup.md): Connecting GitHub Actions for automated deployments.
+
+## 🔐 Credentials in this repository
+
+This repository is **public**, and `MT5/.env.example` is committed. The values
+in it are placeholders and have to stay placeholders: the `VNC_PASSWORD` that
+used to sit there was the one the terminal container was actually running, for
+a service published on `0.0.0.0:6901`. An untracked `MT5/.env.env.bak` carried
+the same value.
+
+If you are adopting this repository, **rotate `VNC_PASSWORD`** - the old value
+remains in git history and history is not fixed by deleting a file - and
+consider binding 6901 to localhost, since the interface is reachable over an
+SSH tunnel and does not need to be world-facing. `.gitignore` now covers
+`.env*` with the `.env.example` files excepted, so a backup written beside a
+live env file cannot be committed by accident.
 
 ## 🛠️ Environment Variables
 

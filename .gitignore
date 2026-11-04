@@ -17,3 +17,5 @@ MT5/api/logs/
 .env*
 !.env.example
 !**/.env.example
+.remember/
+.pytest_cache/
