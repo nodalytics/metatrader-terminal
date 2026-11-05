@@ -100,10 +100,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU (multi-arch)
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -133,6 +129,7 @@ jobs:
           push: false
           load: true
           tags: mt5-terminal:ci
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -177,15 +174,26 @@ jobs:
         if: always()
         run: docker rm -f mt5-terminal-test || true
 
-      # Step 3: Build & Push (AMD64 only as per original)
-      - name: Build and Push
+      # Step 3: Push what was just built and smoke tested.
+      #
+      # **This used to build the image a second time.** Both builds were
+      # `linux/amd64` from the same context, so the second was the same image
+      # again - re-exported to the registry and re-writing the `mode=max`
+      # cache, inside a job measured at 6m10s where the two test jobs beside
+      # it take 44s. Cache hits make a rebuild cheap in layers and not in
+      # export: the exporter still walks and uploads the whole image.
+      #
+      # Pushing the loaded image keeps the ordering that matters - built,
+      # smoke tested, *then* published - which a single `push: true` build
+      # would have reversed, publishing before the container was known to
+      # start.
+      - name: Push
         if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
-        uses: docker/build-push-action@v5
-        with:
-          context: MT5
-          push: true
-          platforms: linux/amd64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${{ steps.meta.outputs.tags }}" | while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            echo "pushing $tag"
+            docker tag mt5-terminal:ci "$tag"
+            docker push "$tag"
+          done
