@@ -19,3 +19,11 @@ MT5/api/logs/
 !**/.env.example
 .remember/
 .pytest_cache/
+
+# The MCP server's two test virtualenvs, and the editable install's metadata.
+# Two virtualenvs rather than one because the bridge pins pydantic 1 while the
+# MCP SDK requires pydantic 2, so its suites cannot share an interpreter - see
+# mcp-server/README.md.
+mcp-server/.venv-contract/
+mcp-server/.venv-registry/
+mcp-server/*.egg-info/

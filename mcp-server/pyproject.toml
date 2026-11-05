@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mt5-mcp-server"
+version = "0.1.0"
+description = "An MCP server over the MetaTrader 5 HTTP bridge in this repository"
+readme = "README.md"
+# 3.10 and not 3.9: the tool signatures use `X | None` as a runtime
+# expression. They cannot be strings instead - the MCP SDK calls `issubclass`
+# on each parameter's annotation while building a tool's input schema, so
+# `from __future__ import annotations` in the tool module makes every tool
+# unregisterable.
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.9,<2",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+mt5-mcp = "mt5_mcp.server:main"
+
+[tool.setuptools.packages.find]
+include = ["mt5_mcp*"]

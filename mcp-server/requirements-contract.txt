@@ -1,0 +1,27 @@
+# What `tests/contract` needs: the bridge's own dependencies, because those
+# tests import the bridge's FastAPI application and run it in-process.
+#
+# Deliberately not `-r ../MT5/api/requirements.txt`. That file pins
+# `greenlet==2.0.2` to work around a build failure under Wine, and that
+# version does not compile on Python 3.12 or newer - so inheriting the pin
+# would make these tests unrunnable anywhere except inside the container the
+# pin exists for. Everything else below is the bridge's list, minus
+# `MetaTrader5` (win32-only, and replaced by the fake) and `rpyc` (used only
+# on the bridge's other transport).
+#
+# This file cannot be installed alongside the MCP SDK: the bridge pins
+# pydantic 1 and the SDK requires pydantic 2. See README.md.
+fastapi
+pydantic<2.0.0
+sqlmodel
+sqlalchemy
+pandas
+numpy
+pytz>=2025.2
+python-dotenv
+apscheduler
+prometheus-fastapi-instrumentator
+websockets
+httpx
+anyio
+pytest
