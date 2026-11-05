@@ -175,10 +175,17 @@ jobs:
             # that matters here - the repository records three days of "a desk
             # that decided correctly and could not act". So poll the API, with
             # a bound, and print the logs on the way out.
-            deadline=$(( $(date +%s) + 300 ))
+            # **600, not 300.** MetaTrader starts under Wine, loads or
+            # installs its prefix and logs in to the broker; on 2026-11-05 a
+            # cold start after a full image pull answered at 09:49:05 and the
+            # check had given up at 09:49:10 - five seconds short, reported as
+            # a deploy failure over a deploy that worked. The image is now
+            # 4.36GB rather than 9.41GB so the pull is quicker, but the margin
+            # was the problem, not the mean.
+            deadline=$(( $(date +%s) + 600 ))
             until curl -sf --max-time 5 -o /dev/null http://127.0.0.1:8000/; do
               if [ "$(date +%s)" -ge "$deadline" ]; then
-                echo "::error::the bridge did not answer on 127.0.0.1:8000 within 300s"
+                echo "::error::the bridge did not answer on 127.0.0.1:8000 within 600s"
                 docker compose ps
                 docker compose logs --tail 80
                 exit 1

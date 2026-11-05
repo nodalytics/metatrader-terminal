@@ -131,7 +131,6 @@ All endpoints (except auth, health, and docs) require an `X-API-Key` header. Get
 | GET | `/api/v1/terminal/info` | Terminal info (build, connected, trade_allowed) |
 | GET | `/api/v1/terminal/account/info` | Account info (balance, equity, margin) |
 | GET | `/api/v1/terminal/version` | MT5 version |
-| POST | `/api/v1/terminal/connect` | Connect with credentials |
 | POST | `/api/v1/terminal/disconnect` | Disconnect from terminal |
 | GET | `/api/v1/terminal/ping` | Broker ping latency |
 | GET | `/api/v1/terminal/algo-trading` | Is AutoTrading on? (`trade_allowed`) |

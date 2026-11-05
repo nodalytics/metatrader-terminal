@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 from app.services.mt5_service import mt5_service
 from app.utils.exceptions import MT5SymbolNotFoundError
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 from app.services.terminal_transport import mt5
 
@@ -192,12 +192,26 @@ def fetch_data_from(symbol: str, timeframe: str, date_from: datetime, count: int
 
 
 @router.get("/rates/pos")
-def fetch_data_pos(symbol: str, timeframe: str = "M1", num_bars: int = 100):
-    """The most recent `num_bars` closed bars, newest last.
+def fetch_data_pos(
+    symbol: str,
+    timeframe: str = "M1",
+    num_bars: int = 100,
+    start_pos: int = 0,
+    count: Optional[int] = Query(None, include_in_schema=False),
+):
+    """`num_bars` closed bars ending `start_pos` back from now, newest last.
 
     The last element is the **forming** bar - its close is simply the current
     price - so a caller reading a pattern from it is making a claim the next tick
-    can withdraw.
+    can withdraw. **`start_pos=1` excludes it**, which is what a caller wanting
+    only closed bars means; it used to have no way to say so and had to drop the
+    newest row itself, which every client then had to remember.
+
+    `count` is accepted as an alias for `num_bars` and hidden from the schema.
+    FastAPI drops a parameter it does not declare, so a caller sending `count`
+    - which the adapter in this repository did for months - got the default of
+    100 bars with a 200 and no warning. One name is blessed; the other is
+    honoured rather than silently ignored.
 
     There is a practical ceiling on `num_bars` that is not a limit on history:
     every bar becomes a dict and then JSON, inside a container with a memory
@@ -205,19 +219,44 @@ def fetch_data_pos(symbol: str, timeframe: str = "M1", num_bars: int = 100):
     fewer bars. Measured on this deployment, 50,000 answers and 100,000 does not.
     A failure is now a 502 carrying MT5's own error, not a 404.
     """
-    return mt5_service.copy_rates_from_pos(symbol, timeframe, 0, num_bars)
+    wanted = int(count) if count is not None and num_bars == 100 else int(num_bars)
+    return mt5_service.copy_rates_from_pos(symbol, timeframe, int(start_pos), wanted)
 
 
 @router.get("/rates/range")
-def fetch_data_range(symbol: str, timeframe: str, start: datetime, end: datetime):
+def fetch_data_range(
+    symbol: str,
+    timeframe: str,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    date_from: Optional[datetime] = Query(None, include_in_schema=False),
+    date_to: Optional[datetime] = Query(None, include_in_schema=False),
+    from_date: Optional[datetime] = Query(None, include_in_schema=False),
+    to_date: Optional[datetime] = Query(None, include_in_schema=False),
+):
     """Every bar between two dates - the unambiguous way to ask for a window.
 
     Preferred over `/rates/from` for history, because the window is stated rather
     than counted from one end. A window with no bars in it answers `[]`; it is the
     same response-size ceiling as `/rates/pos` that decides how wide a window can
     be asked for at once.
+
+    **This bridge spelled one window three ways.** `/history/*` took
+    `from_date`/`to_date`, `/symbols/ticks/{s}/range` took `date_from`/`date_to`,
+    and this route took `start`/`end`. A caller who learned one spelling got a
+    silent empty from the next, because FastAPI drops a parameter it does not
+    declare. All three are accepted here and on the tick range; `start`/`end`
+    remain the documented pair, since blessing one name is the point of having
+    one.
     """
-    return mt5_service.copy_rates_range(symbol, timeframe, start, end)
+    first = start or date_from or from_date
+    last = end or date_to or to_date
+    if first is None or last is None:
+        raise HTTPException(
+            status_code=UNPROCESSABLE,
+            detail="a window needs both ends: start/end (or date_from/date_to, from_date/to_date)",
+        )
+    return mt5_service.copy_rates_range(symbol, timeframe, first, last)
 
 
 @router.get("/ticks/{symbol}/from")
@@ -229,8 +268,28 @@ def get_ticks_from(symbol: str, date_from: datetime, count: int = 1000, flags: s
 
 
 @router.get("/ticks/{symbol}/range")
-def get_ticks_range(symbol: str, date_from: datetime, date_to: datetime, flags: str = "ALL"):
-    data = mt5_service.copy_ticks_range(symbol, date_from, date_to, flags)
+def get_ticks_range(
+    symbol: str,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+    start: Optional[datetime] = Query(None, include_in_schema=False),
+    end: Optional[datetime] = Query(None, include_in_schema=False),
+    from_date: Optional[datetime] = Query(None, include_in_schema=False),
+    to_date: Optional[datetime] = Query(None, include_in_schema=False),
+    flags: str = "ALL",
+):
+    """Ticks over a window. `date_from`/`date_to` are the documented pair; the
+    other two spellings this bridge uses elsewhere are accepted, because a
+    parameter FastAPI does not declare is dropped and the caller gets an empty
+    answer that looks like a quiet market."""
+    first = date_from or start or from_date
+    last = date_to or end or to_date
+    if first is None or last is None:
+        raise HTTPException(
+            status_code=UNPROCESSABLE,
+            detail="a window needs both ends: date_from/date_to (or start/end, from_date/to_date)",
+        )
+    data = mt5_service.copy_ticks_range(symbol, first, last, flags)
     if data is None:
         raise HTTPException(status_code=404, detail="No tick data found")
     return data
