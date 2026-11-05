@@ -9,7 +9,17 @@
 # starts and dies with `exec format error`, which says nothing about the cause.
 services:
   mt5-terminal:
-    image: ghcr.io/nodalytics/mt5-terminal:latest
+    # **`TAG`, because the deploy has always claimed to take one.**
+    #
+    # `deploy.yml` offers a `tag` input and passes it to the host as `TAG`,
+    # and this line pinned `latest` - so every "deploy tag X" pulled `latest`
+    # and reported success. An input that is accepted, runs, and does
+    # something else is the shape of defect this repository keeps paying for.
+    #
+    # It also makes a rollback possible at all: the build publishes an
+    # immutable `sha-<short>` tag beside `latest`, and without this there was
+    # no way to ask for a known-good one.
+    image: ghcr.io/nodalytics/mt5-terminal:${TAG:-latest}
     platform: linux/amd64
     # Loopback only. Both are reached through something on this host: nginx
     # proxies to localhost:6901 and localhost:8000, and the reverse tunnel and
