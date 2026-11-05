@@ -2,7 +2,7 @@ import sys
 import logging
 from contextlib import asynccontextmanager
 try:
-    import MetaTrader5 as mt5
+    from app.services.terminal_transport import mt5
 except ImportError:
     print("CRITICAL ERROR: MetaTrader5 library is not installed. This API requires MetaTrader5 to function.")
     sys.exit(1)

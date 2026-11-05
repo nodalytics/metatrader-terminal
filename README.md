@@ -426,6 +426,42 @@ For production setups, please refer to the detailed guides in the `docs/` folder
 -   [Server Setup Guide](docs/server-setup.md): Preparing your Linux/EC2 instance and Nginx.
 -   [CI/CD Pipeline Setup](docs/github-actions-setup.md): Connecting GitHub Actions for automated deployments.
 
+## 🔌 Where the terminal is: in-process or over rpyc
+
+`MT5_TRANSPORT` chooses how this service reaches MT5. **`inprocess` is the
+default and nothing about it changes** — it imports the `MetaTrader5` package
+and talks to a terminal on the same machine, which is why the API runs inside
+the terminal's container: the package is win32-only.
+
+`rpyc` proxies a terminal elsewhere. It is **not faster** — an in-process call
+has no network hop to remove, so routing it through rpyc adds one. What it buys
+is *where the API may run*: outside the Wine container, or one API against
+several terminals. If latency is what you want, the lever is
+`MT5/ea/TillTickFeed.mq5`: `OnTick` is a real callback, so an EA pushes **every**
+tick where a poll is a sample.
+
+Two restrictions, because an rpyc connection is a remote-code channel by
+default and this one carries trade instructions:
+
+- **No pickle.** `rpyc.utils.classic.obtain` would convert results in one line
+  and unpickles on this side, making any value the terminal returns a code path
+  into this process. Results are converted field-wise instead — a namedtuple's
+  `_fields` and `tuple(result)` are tuples of primitives and cross by value.
+- **Loopback unless you say otherwise.** The channel is plaintext and
+  unauthenticated, so a non-local `MT5_RPYC_HOST` is refused without
+  `MT5_RPYC_ALLOW_REMOTE=1`. Reach a remote terminal through an **SSH tunnel**
+  to `127.0.0.1`, which is how the rest of this stack reaches one, or use
+  `rpyc.ssl_connect` with mutual TLS.
+
+`allow_all_attrs` is the one concession: the conversion reads `_fields`, which
+rpyc's default policy blocks as private. The narrower shape is an `exposed_`
+service on the terminal side returning plain dicts, which removes the need for
+attribute access entirely — worth doing if this is ever pointed at a host
+someone else controls.
+
+`rpyc` is not in `requirements.txt`: the import happens only on that branch, so
+the default install is unchanged. Add it if you intend to use the option.
+
 ## 🛠️ Environment Variables
 
 The project uses the following key variables in your `.env`:

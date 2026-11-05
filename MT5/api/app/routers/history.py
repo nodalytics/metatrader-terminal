@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.services.mt5_service import mt5_service
 from typing import Optional
 from datetime import datetime
-import MetaTrader5 as mt5
+from app.services.terminal_transport import mt5
 
 router = APIRouter(prefix="/history", tags=["History"])
 

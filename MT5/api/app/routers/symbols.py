@@ -3,7 +3,7 @@ from app.services.mt5_service import mt5_service
 from app.utils.exceptions import MT5SymbolNotFoundError
 from typing import Any, Dict, List
 from datetime import datetime
-import MetaTrader5 as mt5
+from app.services.terminal_transport import mt5
 
 router = APIRouter(prefix="/symbols", tags=["Symbols"])
 

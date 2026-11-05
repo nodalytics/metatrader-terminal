@@ -4,7 +4,7 @@ from app.models.trading import ModifySLTPRequest
 from app.utils.exceptions import MT5SymbolNotFoundError
 from app.utils.sent import DONE, answered
 from typing import Optional
-import MetaTrader5 as mt5
+from app.services.terminal_transport import mt5
 
 router = APIRouter(prefix="/positions", tags=["Positions"])
 

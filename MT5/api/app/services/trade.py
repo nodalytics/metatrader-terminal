@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime
 from typing import Optional, List, Dict
-import MetaTrader5 as mt5
+from app.services.terminal_transport import mt5
 from .connector import mt5_connector
 from app.utils.exceptions import MT5OrderError, MT5SymbolNotFoundError
 

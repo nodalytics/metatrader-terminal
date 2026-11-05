@@ -1,4 +1,4 @@
-import MetaTrader5 as mt5
+from app.services.terminal_transport import mt5
 import logging
 import os
 import threading
