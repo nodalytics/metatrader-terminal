@@ -22,11 +22,26 @@ services:
     environment:
       VNC_USER: ${VNC_USER:-"mt5_user"}
       VNC_PASSWORD: ${VNC_PASSWORD:-"password"}
-      MT5_LOGIN: ${MT5_LOGIN:-0}
       MT5_API_PORT: ${MT5_API_PORT:-8000}
-      API_KEY_SEED: ${API_KEY_SEED:-"default-seed-for-dev"}
-      MT5_PASSWORD: ${MT5_PASSWORD:-"password"}
-      MT5_SERVER: ${MT5_SERVER:-"MetaTrader-Demo"}
+      # ── No default for a credential ───────────────────────────────────
+      # These four used to carry one — `0`, `"password"`, `"MetaTrader-Demo"`
+      # and, worst, `API_KEY_SEED: ${API_KEY_SEED:-"default-seed-for-dev"}`.
+      #
+      # On 2026-11-05 a deploy wrote a `.env` from `.env.example`, which has
+      # no `API_KEY_SEED` line at all, so this default applied and the bridge
+      # computed its key from a constant published in this repository. The
+      # desk, sending the sha256 of the real seed, got **4,350 `401 Invalid
+      # or missing API Key` a minute** and could not trade. Nothing logged an
+      # error: from the container's point of view it was correctly configured.
+      #
+      # A default that is wrong is worse than no default, because the stack
+      # starts and passes its health check. `:?` makes compose refuse to start
+      # and say which variable is missing, which is the behaviour that turns
+      # this into a thirty-second fix instead of an outage nobody can see.
+      API_KEY_SEED: ${API_KEY_SEED:?set it in .env - the desk must send its sha256 as X-API-Key}
+      MT5_LOGIN: ${MT5_LOGIN:?set it in .env - the terminal cannot log in without an account}
+      MT5_PASSWORD: ${MT5_PASSWORD:?set it in .env}
+      MT5_SERVER: ${MT5_SERVER:?set it in .env - the broker server name, e.g. Deriv-Demo}
       # Whether the API may start on a terminal that cannot place an order.
       #
       # The default refuses. `auto_login_wrapper.sh` confirms
