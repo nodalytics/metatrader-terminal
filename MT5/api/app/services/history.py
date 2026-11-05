@@ -1,4 +1,4 @@
-import MetaTrader5 as mt5
+from app.services.terminal_transport import mt5
 from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 from .connector import mt5_connector

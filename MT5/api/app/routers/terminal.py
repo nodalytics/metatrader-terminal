@@ -5,7 +5,7 @@ from app.services import algo
 from app.models.trading import AlgoTradingRequest
 from app.utils.exceptions import MT5ConnectionError
 from typing import Dict, Any
-import MetaTrader5 as mt5
+from app.services.terminal_transport import mt5
 
 router = APIRouter(prefix="/terminal", tags=["Terminal"])
 

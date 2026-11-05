@@ -92,7 +92,7 @@ class MT5Service:
         return history_service.get_history_orders(*args, **kwargs)
 
     def last_error(self):
-        import MetaTrader5 as mt5
+        from app.services.terminal_transport import mt5
         return mt5.last_error()
 
 mt5_service = MT5Service()

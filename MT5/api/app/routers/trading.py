@@ -9,7 +9,7 @@ from app.utils.sent import DONE, checked
 from app.utils.exceptions import MT5SymbolNotFoundError, MT5OrderError
 from app.db import crud
 from app.utils import helpers
-import MetaTrader5 as mt5
+from app.services.terminal_transport import mt5
 
 router = APIRouter(prefix="/trading", tags=["Trading"])
 

@@ -34,7 +34,7 @@ from typing import Any, Dict, Optional, Tuple
 from app.utils.exceptions import MT5OrderError
 
 try:  # pragma: no cover - present wherever this actually runs
-    import MetaTrader5 as mt5
+    from app.services.terminal_transport import mt5
 
     _DONE = mt5.TRADE_RETCODE_DONE
     _PLACED = mt5.TRADE_RETCODE_PLACED

@@ -51,7 +51,7 @@ import logging
 import os
 import time
 
-import MetaTrader5 as mt5
+from app.services.terminal_transport import mt5
 
 logger = logging.getLogger(__name__)
 

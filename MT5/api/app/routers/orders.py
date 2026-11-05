@@ -3,7 +3,7 @@ from app.services.mt5_service import mt5_service
 from app.models.trading import PendingOrderRequest, ModifyPendingOrderRequest
 from app.utils.sent import DONE, PLACED, answered
 from typing import Optional
-import MetaTrader5 as mt5
+from app.services.terminal_transport import mt5
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 

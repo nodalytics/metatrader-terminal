@@ -17,3 +17,8 @@ greenlet==2.0.2  # Fixes "Microsoft Visual C++ 14.0 or greater is required" in W
 pytz>=2025.2
 pytest
 httpx
+# Only imported on the MT5_TRANSPORT=rpyc branch, but installed always:
+# the transport's tests stand up a real connection to a real service, and
+# behind an importorskip they would have skipped silently in CI - a green
+# suite that tested nothing is worse than a red one.
+rpyc

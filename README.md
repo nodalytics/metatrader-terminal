@@ -426,6 +426,80 @@ For production setups, please refer to the detailed guides in the `docs/` folder
 -   [Server Setup Guide](docs/server-setup.md): Preparing your Linux/EC2 instance and Nginx.
 -   [CI/CD Pipeline Setup](docs/github-actions-setup.md): Connecting GitHub Actions for automated deployments.
 
+## 🔌 Where the terminal is: in-process or over rpyc
+
+`MT5_TRANSPORT` chooses how this service reaches MT5. **`inprocess` is the
+default and nothing about it changes** — it imports the `MetaTrader5` package
+and talks to a terminal on the same machine, which is why the API runs inside
+the terminal's container: the package is win32-only.
+
+`rpyc` proxies a terminal elsewhere. It is **not faster** — an in-process call
+has no network hop to remove, so routing it through rpyc adds one. What it buys
+is *where the API may run*: outside the Wine container, or one API against
+several terminals. If latency is what you want, the lever is
+`MT5/ea/TillTickFeed.mq5`: `OnTick` is a real callback, so an EA pushes **every**
+tick where a poll is a sample.
+
+### Running it
+
+The terminal side is a service of its own, started **beside the terminal** —
+inside the Wine container, where the win32-only `MetaTrader5` package can
+import:
+
+```sh
+MT5_RPYC_PORT=18812 python -m app.services.terminal_server
+```
+
+The API then runs anywhere with `MT5_TRANSPORT=rpyc`. `MT5_RPYC_BIND` chooses
+the interface it listens on and defaults to loopback.
+
+### Nothing crosses as a reference
+
+rpyc sends primitives and tuples of primitives **by value** and everything else
+— `dict` and `list` included — as a *netref*: a proxy whose every attribute
+read is another round trip. Values in both directions are therefore encoded as
+tagged tuples of primitives (`app/services/terminal_wire.py`) and rebuilt
+locally, and an unknown shape raises rather than degrading into a proxy.
+
+That is a structural property, not a policy setting, and it is what lets both
+ends keep rpyc's restrictive defaults — `allow_all_attrs` and `allow_pickle`
+off. **A tighter policy would not have been enough**: `__class__` and
+`__call__` are on rpyc's safe list in every configuration, so any reference
+handed over is a foothold. Measured under the restrictive defaults, the far
+side reached `object.__subclasses__()` from a plain `dict` and called a
+constructor that ran in the process that handed the reference over.
+
+The terminal-side service exposes three methods — list the functions, call one,
+read a constant — over a **closed list** of the functions the API actually
+calls, with constants matched by name pattern. So the reachable surface is not
+even "call any function on the `MetaTrader5` module", which matters because
+`initialize(path)` *launches* the executable it is handed: an open module is a
+code-execution primitive, not merely a way to place trades. The list is pinned
+by a test that re-derives it from the application's own source, so a new call
+site cannot silently find itself refused on this path alone.
+
+`initialize` and `login` are answered with **this host's** path and
+credentials whatever the client sends — they describe the terminal's machine,
+which the client is by construction not on. The client's intent is kept:
+whether to send credentials at all, which `connector.py` depends on because
+re-sending them raises an "account changed" event that disables algo trading.
+
+`MT5_RPYC_SECRET` adds a handshake, compared in constant time, before rpyc's
+own protocol. Loopback is not an identity — every process on the host can
+reach the port, and the one that reaches it can trade. It crosses in clear, so
+it answers "which local process" and not "which machine"; a non-loopback bind
+is refused without it.
+
+### What it still is
+
+**Loopback unless you say otherwise.** The channel is plaintext and
+unauthenticated and whoever reaches it can place trades, so a non-local
+`MT5_RPYC_HOST` — or a non-local `MT5_RPYC_BIND` — is refused without
+`MT5_RPYC_ALLOW_REMOTE=1`. Reach a remote terminal through an **SSH tunnel** to
+`127.0.0.1`, which is how the rest of this stack reaches one, or use
+`rpyc.ssl_connect` with mutual TLS. Binding this to a public interface is
+equivalent to publishing the trading password.
+
 ## 🛠️ Environment Variables
 
 The project uses the following key variables in your `.env`:
