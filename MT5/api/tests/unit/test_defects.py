@@ -456,3 +456,74 @@ def test_the_count_reaches_the_terminal_unchanged(app_client, terminal):
     sent = [c for c in terminal.calls if c[0] == "copy_rates_from"]
     assert sent, terminal.calls
     assert sent[-1][1][-1] == 3000, f"count arrived as {sent[-1][1][-1]}"
+
+
+def test_a_refused_order_is_not_a_server_fault(app_client, terminal):
+    """**`order_send` returns `None` when the terminal refuses outright.**
+
+    A malformed field, a symbol that is not selected, a wedged IPC pipe - the
+    request never becomes an order and there is no result to read. Every call
+    site read `result.retcode` immediately, so that `None` became
+    `'NoneType' object has no attribute 'retcode'` and the middleware turned
+    it into a **500**, which is what the live desk saw on 2026-11-05.
+
+    A refused order is the caller's business, not a server fault: an automated
+    caller cannot tell "the bridge is broken" from "your order was rejected",
+    and those are opposite instructions.
+    """
+    import fake_mt5
+
+    def refuse(request):
+        fake_mt5._record("order_send", request)
+        return None
+
+    terminal.error = (10013, "Invalid request")
+    original, fake_mt5.order_send = fake_mt5.order_send, refuse
+    try:
+        r = app_client.post(
+            "/api/v1/trading/order",
+            json={"symbol": "XAUUSD", "order_type": "BUY", "volume": 0.01, "sl": 0.0},
+        )
+    finally:
+        fake_mt5.order_send = original
+
+    assert r.status_code != 500, r.text
+    body = r.json()
+    assert "refused by the terminal" in str(body), body
+    assert "NoneType" not in str(body), "the caller was shown a Python error"
+
+
+def test_a_stop_limit_carries_the_price_it_rests_at(app_client, terminal):
+    """**MT5 carries a stop-limit's two prices separately.**
+
+    `price` is the trigger and `stoplimit` is where the order then rests. The
+    route accepted `BUY_STOP_LIMIT` and `SELL_STOP_LIMIT` in its pattern and
+    sent only `price`, so the type was offered and could never be fully
+    specified - the terminal received an incomplete request for an order the
+    caller believed it had placed.
+    """
+    r = app_client.post(
+        "/api/v1/orders/pending",
+        json={
+            "symbol": "XAUUSD", "volume": 0.01, "order_type": "BUY_STOP_LIMIT",
+            "price": 4410.0, "stoplimit": 4405.0,
+        },
+    )
+
+    assert r.status_code in (200, 201), r.text
+    sent = [c for c in terminal.calls if c[0] == "order_send"][-1][1][0]
+    assert sent["price"] == 4410.0, "the trigger"
+    assert sent["stoplimit"] == 4405.0, "the price it rests at"
+
+
+def test_a_stop_limit_without_its_resting_price_is_refused(app_client, terminal):
+    """Refused rather than sent incomplete. A stop-limit missing `stoplimit`
+    is a request the terminal cannot honour as asked, and silently dropping
+    the field put an order on the book that was not the one requested."""
+    r = app_client.post(
+        "/api/v1/orders/pending",
+        json={"symbol": "XAUUSD", "volume": 0.01, "order_type": "SELL_STOP_LIMIT", "price": 4400.0},
+    )
+
+    assert r.status_code not in (200, 201), r.text
+    assert "stoplimit" in r.text

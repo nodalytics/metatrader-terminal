@@ -788,6 +788,7 @@ class Tools:
         order_type: str,
         volume: float,
         price: float,
+        limit_price: float | None = None,
         stop_loss: float | None = None,
         take_profit: float | None = None,
         expiry: datetime | None = None,
@@ -818,11 +819,12 @@ class Tools:
 
         Fill policy comes from the symbol's bitmask, as for a market order.
 
-        **One limitation of the bridge, not of MT5:** for the two stop-limit
-        types the bridge sends only `price` and never MT5's separate
-        `stoplimit` field, so the resting limit price cannot be expressed
-        through this route. A real terminal is expected to refuse those two
-        types; the four plain limit and stop types are unaffected.
+        **A stop-limit has two prices.** `price` is the level that triggers it
+        and `limit_price` is where the order then rests, which MT5 carries
+        separately as `stoplimit`. Both are required for `BUY_STOP_LIMIT` and
+        `SELL_STOP_LIMIT` and `limit_price` is ignored for the other four -
+        the bridge used to send only the trigger, so those two types were
+        offered and could never be the order a caller asked for.
         """
         kind = (order_type or "").strip().upper()
         if kind not in PENDING_TYPES:
@@ -841,6 +843,15 @@ class Tools:
             "comment": (comment or "")[:COMMENT_LIMIT],
             "type_filling": used,
         }
+        if kind.endswith("STOP_LIMIT"):
+            if limit_price is None:
+                return {
+                    "ok": False,
+                    "accepted": False,
+                    "error": f"{kind} needs `limit_price`, the price it rests at once "
+                    f"`price` triggers it - MT5 carries the two separately",
+                }
+            body["stoplimit"] = float(limit_price)
         if stop_loss is not None:
             body["sl"] = float(stop_loss)
         if take_profit is not None:

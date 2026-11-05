@@ -173,13 +173,36 @@ async def test_each_resting_order_type_arrives_as_itself(tools, calls, order_typ
     one wrong value would place buys where sells were meant on exactly one
     type.
     """
-    answer = await tools.place_pending_order("XAUUSD", order_type, 0.05, price=4350.0)
+    # The two stop-limit types need both prices: `price` triggers and
+    # `limit_price` is where the order then rests. MT5 carries them
+    # separately and a request with only the trigger is not the order the
+    # caller asked for.
+    extra = {"limit_price": 4345.0} if order_type.endswith("STOP_LIMIT") else {}
+    answer = await tools.place_pending_order(
+        "XAUUSD", order_type, 0.05, price=4350.0, **extra
+    )
 
     assert answer["ok"] is True, f"{order_type} did not reach the terminal: {answer}"
     _, args, _ = last_call(calls, "order_send")
     assert args[0]["action"] == fake_mt5.TRADE_ACTION_PENDING
     assert args[0]["type"] == constant
     assert args[0]["price"] == 4350.0
+    if extra:
+        assert args[0]["stoplimit"] == 4345.0, "the resting price never reached the terminal"
+
+
+async def test_a_stop_limit_without_its_resting_price_is_refused(tools, calls):
+    """Refused by the tool, before the bridge sees it.
+
+    The alternative is placing an order that is not the one asked for, which
+    is what happened while the bridge dropped the field: the type was offered,
+    the call succeeded in shape, and the terminal received an incomplete
+    request.
+    """
+    answer = await tools.place_pending_order("XAUUSD", "BUY_STOP_LIMIT", 0.05, price=4350.0)
+
+    assert answer["ok"] is False
+    assert "limit_price" in answer["error"]
 
 
 async def test_a_resting_order_carries_its_stop_target_and_expiry(tools, calls):

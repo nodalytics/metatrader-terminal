@@ -50,6 +50,36 @@ def resolve_filling(requested: str, mask: int) -> int:
     return mt5.ORDER_FILLING_RETURN
 
 
+
+def _sent(result, what: str):
+    """The terminal's answer, or `MT5OrderError` saying it refused outright.
+
+    **`order_send` returns `None` when the terminal rejects the request before
+    it becomes an order** - a malformed field, a symbol that is not selected,
+    an IPC failure. Every call site here read `result.retcode` straight away,
+    so that `None` became
+
+        'NoneType' object has no attribute 'retcode'
+
+    which the exception middleware turned into a **500**. A refused order is
+    not a server fault: the caller gets a 500 where it should be told what the
+    terminal said, and an automated caller cannot tell "the bridge is broken"
+    from "your order was rejected" - which are opposite instructions.
+
+    `last_error()` carries MT5's own reason and is the only thing that knows
+    it, so it is attached rather than invented.
+    """
+    if result is not None:
+        return result
+    try:
+        code, message = mt5.last_error()
+    except Exception:  # the terminal is not answering at all
+        code, message = -1, "no answer from the terminal"
+    raise MT5OrderError(
+        f"{what} refused by the terminal before it became an order: {message}",
+        code=int(code),
+    )
+
 class TradeService:
     def send_market_order(self, symbol: str, volume: float, order_type: str, sl: float, tp: float = None,
                           deviation: int = 20, comment: str = '', magic: int = 0, type_filling: str = 'FOK'):
@@ -94,7 +124,7 @@ class TradeService:
         if tp is not None:
             request["tp"] = float(tp)
             
-        result = mt5.order_send(request)
+        result = _sent(mt5.order_send(request), "Order")
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             raise MT5OrderError(f"Order failed: {result.comment}", code=result.retcode)
         return result
@@ -102,7 +132,8 @@ class TradeService:
     def send_pending_order(self, symbol: str, volume: float, order_type: str, price: float,
                           sl: float = None, tp: float = None, deviation: int = 20,
                           comment: str = '', magic: int = 0, type_filling: str = 'FOK',
-                          type_time: str = 'GTC', expiration: datetime = None):
+                          type_time: str = 'GTC', expiration: datetime = None,
+                          stoplimit: float = None):
         mt5_connector.initialize()
 
         order_type_map = {
@@ -154,8 +185,23 @@ class TradeService:
             request["tp"] = float(tp)
         if expiration is not None:
             request["expiration"] = int(expiration.timestamp())
+        # **A stop-limit has two prices and this sent one.**
+        #
+        # `BUY_STOP_LIMIT` and `SELL_STOP_LIMIT` were accepted and the limit
+        # price had nowhere to go: MT5 carries the trigger in `price` and the
+        # limit the order rests at in `stoplimit`, and without the second one
+        # the terminal has an incomplete request. The type was offered, the
+        # call succeeded in shape, and the order could not be what the caller
+        # asked for.
+        if stoplimit is not None:
+            request["stoplimit"] = float(stoplimit)
+        elif mt5_type in (mt5.ORDER_TYPE_BUY_STOP_LIMIT, mt5.ORDER_TYPE_SELL_STOP_LIMIT):
+            raise MT5OrderError(
+                f"{order_type} needs `stoplimit`, the price the order rests at once "
+                f"`price` triggers it - MT5 carries the two separately"
+            )
 
-        result = mt5.order_send(request)
+        result = _sent(mt5.order_send(request), "Pending order")
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             raise MT5OrderError(f"Pending order failed: {result.comment}", code=result.retcode)
         return result
@@ -196,7 +242,7 @@ class TradeService:
         if expiration is not None:
             request["expiration"] = int(expiration.timestamp())
 
-        result = mt5.order_send(request)
+        result = _sent(mt5.order_send(request), "Modify pending order")
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             raise MT5OrderError(f"Modify pending order failed: {result.comment}", code=result.retcode)
         return result
@@ -209,7 +255,7 @@ class TradeService:
             "order": ticket,
         }
 
-        result = mt5.order_send(request)
+        result = _sent(mt5.order_send(request), "Cancel order")
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             raise MT5OrderError(f"Cancel order failed: {result.comment}", code=result.retcode)
         return result
@@ -233,7 +279,10 @@ class TradeService:
         else:
             request["tp"] = float(position[0].tp)
             
-        result = mt5.order_send(request)
+        # Modify returns the raw answer; `_sent` still turns an outright
+        # refusal into an error rather than a `None` the caller must
+        # discover by dereferencing it.
+        result = _sent(mt5.order_send(request), "Modify position")
         return result
 
     def close_position(self, ticket: int, volume: float = None, deviation: int = 20,
@@ -276,7 +325,7 @@ class TradeService:
             ),
         }
 
-        result = mt5.order_send(request)
+        result = _sent(mt5.order_send(request), "Close")
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             raise MT5OrderError(f"Close failed: {result.comment}", code=result.retcode)
         return result

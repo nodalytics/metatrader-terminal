@@ -44,6 +44,12 @@ class PendingOrderRequest(BaseModel):
     type_filling: str = "FOK"
     type_time: str = Field("GTC", pattern="^(GTC|DAY|SPECIFIED|SPECIFIED_DAY)$")
     expiration: Optional[datetime] = None
+    #: The price a stop-limit rests at once `price` has triggered it. MT5
+    #: carries the two separately and this model carried only the trigger, so
+    #: `BUY_STOP_LIMIT` and `SELL_STOP_LIMIT` were accepted by the pattern
+    #: above and could never be fully specified. Required for those two types
+    #: and ignored for the rest.
+    stoplimit: Optional[float] = None
 
 class ModifyPendingOrderRequest(BaseModel):
     price: float
