@@ -121,7 +121,27 @@ class _Remote:
             )
         # Only the timeout. Every other setting stays at rpyc's default, which
         # is the restrictive one; `terminal_wire` exists so that is affordable.
-        self._conn = rpyc.connect(host, port, config={"sync_request_timeout": timeout})
+        config = {"sync_request_timeout": timeout}
+        secret = os.environ.get("MT5_RPYC_SECRET") or ""
+        if host not in self.LOCAL and not secret:
+            raise ValueError(
+                "MT5_RPYC_ALLOW_REMOTE is set but MT5_RPYC_SECRET is not; the "
+                "terminal will refuse the connection, and should."
+            )
+        if secret:
+            # The digest goes first, before rpyc's own protocol, because that
+            # is where the server's authenticator reads it.
+            import socket
+
+            from rpyc.core.stream import SocketStream
+
+            from .terminal_server import token
+
+            sock = socket.create_connection((host, port), timeout)
+            sock.sendall(token(secret))
+            self._conn = rpyc.utils.factory.connect_stream(SocketStream(sock), config=config)
+        else:
+            self._conn = rpyc.connect(host, port, config=config)
         self._root = self._conn.root
         self._calls = frozenset(self._root.callables())
         self._const: dict[str, Any] = {}

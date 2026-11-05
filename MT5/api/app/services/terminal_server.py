@@ -35,8 +35,11 @@ is equivalent to publishing the trading password.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import os
+import re
 from typing import Any
 
 from .terminal_wire import decode, encode, flag
@@ -58,23 +61,130 @@ POLICY = {
 }
 
 
+#: Every `MetaTrader5` function the API calls, and nothing else.
+#:
+#: Derived from the application's own source and **pinned by a test** that
+#: re-derives it and fails on any difference, so a new call site cannot
+#: silently find itself refused over rpyc while working in-process.
+#:
+#: The list matters because the package is not only a data interface.
+#: `initialize(path)` *launches* the executable it is handed, so "call any
+#: public function on the module" is a code-execution primitive and not merely
+#: "can place trades".
+CALLS = frozenset(
+    {
+        "account_info",
+        "copy_rates_from",
+        "copy_rates_from_pos",
+        "copy_rates_range",
+        "copy_ticks_from",
+        "copy_ticks_range",
+        "history_deals_get",
+        "history_orders_get",
+        "initialize",
+        "last_error",
+        "login",
+        "market_book_add",
+        "market_book_get",
+        "market_book_release",
+        "order_calc_margin",
+        "order_calc_profit",
+        "order_send",
+        "orders_get",
+        "orders_total",
+        "positions_get",
+        "shutdown",
+        "symbol_info",
+        "symbol_info_tick",
+        "symbol_select",
+        "symbols_get",
+        "terminal_info",
+        "version",
+    }
+)
+
+#: Calls whose arguments come from **this** host and never from the client.
+#:
+#: `initialize` takes the path of a terminal to launch and the credentials to
+#: log in with. Both describe this machine, which the client has no knowledge
+#: of and no business naming: a client-supplied path is an arbitrary
+#: executable, and client-supplied credentials point the terminal at an
+#: account of the caller's choosing. The client's *intent* is still honoured -
+#: whether to send credentials at all, which `connector.py` depends on because
+#: re-sending them raises an "account changed" event that disables algo
+#: trading - but every value is this host's.
+PINNED = frozenset({"initialize", "login"})
+
+#: A constant's name. MT5's are all upper case; the pattern is what stops
+#: `const` from being a general attribute reader.
+CONSTANT = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+#: The terminal's own path, the same default `connector.py` uses in-process.
+TERMINAL_PATH = os.environ.get("MT5_TERMINAL_PATH") or "C:\\Metatrader-5\\terminal64.exe"
+
+
 def _terminal() -> Any:
     import MetaTrader5 as mt5  # noqa: N813 - the package's own name
 
     return mt5
 
 
-def _named(name: str) -> Any:
-    """One attribute of the package, or `AttributeError` saying so.
+def _credentials() -> dict[str, Any]:
+    """Login, password and server, read here rather than accepted there."""
+    return {
+        "login": int(os.environ.get("MT5_LOGIN") or 0),
+        "password": os.environ.get("MT5_PASSWORD") or "",
+        "server": os.environ.get("MT5_SERVER") or "",
+    }
 
-    The underscore check is the whole access policy: without it `const` would
+
+def _function(name: str) -> Any:
+    """One allowed function, or `AttributeError` naming it."""
+    if name not in CALLS:
+        raise AttributeError(
+            f"{name!r} is not a function this service offers. The list is "
+            f"what the API calls and is deliberately closed: 'any public "
+            f"function on the module' includes initialize(), which launches "
+            f"the executable it is given."
+        )
+    found = getattr(_terminal(), name)
+    if not callable(found):
+        raise TypeError(f"{name!r} is a constant, not a function; ask for it with const()")
+    return found
+
+
+def _constant(name: str) -> Any:
+    """One constant, or `AttributeError`.
+
+    The pattern is the whole access policy here: without it `const` would
     serve `__loader__`, `__builtins__` and anything reachable from them, which
-    would hand back the remote-interpreter surface this service exists to
-    avoid.
+    is the remote-interpreter surface a three-method service exists to avoid.
     """
-    if not name or name.startswith("_"):
-        raise AttributeError(f"{name!r} is not part of the terminal's public interface")
-    return getattr(_terminal(), name)
+    if not CONSTANT.match(name or ""):
+        raise AttributeError(f"{name!r} is not a constant of the terminal's interface")
+    found = getattr(_terminal(), name)
+    if callable(found):
+        raise TypeError(f"{name!r} is a function, not a constant; call it with call()")
+    return found
+
+
+def _local_arguments(name: str, keyword: dict[str, Any]) -> tuple[tuple, dict[str, Any]]:
+    """What `initialize`/`login` are really called with, built here.
+
+    The client's values are dropped and its *intent* kept: `connector.py`
+    calls `initialize(path, portable=True)` first and only retries with
+    credentials if that fails, because re-sending them raises an "account
+    changed" event that switches algo trading off. So "did the client ask for
+    credentials" is honoured; which credentials is not its decision.
+    """
+    wants_credentials = any(key in keyword for key in ("login", "password", "server"))
+    local: dict[str, Any] = {"portable": bool(keyword.get("portable", True))}
+    if wants_credentials:
+        local.update(_credentials())
+    if name == "login":
+        credentials = _credentials()
+        return (credentials.pop("login"),), credentials
+    return (TERMINAL_PATH,), local
 
 
 class TerminalService:
@@ -86,37 +196,69 @@ class TerminalService:
     """
 
     def exposed_callables(self) -> tuple[str, ...]:
-        """Every function the package offers, asked once at connect.
+        """The functions this service offers, asked once at connect.
 
         The client needs to know whether a name is a function or a constant
         *before* it decides what to do with it, and the constants
         (`TIMEFRAME_M15`, `ORDER_TYPE_BUY`, `TRADE_RETCODE_DONE`) outnumber the
         functions. One round trip here spares a round trip per attribute.
         """
-        mt5 = _terminal()
-        return tuple(
-            sorted(
-                name
-                for name in dir(mt5)
-                if not name.startswith("_") and callable(getattr(mt5, name, None))
-            )
-        )
+        return tuple(sorted(CALLS))
 
     def exposed_call(self, name: str, args: tuple, kwargs: tuple) -> tuple:
-        """Call one function, with wire-encoded arguments and result."""
-        found = _named(name)
-        if not callable(found):
-            raise TypeError(f"{name!r} is a constant, not a function; ask for it with const()")
+        """Call one allowed function, with wire-encoded arguments and result."""
+        found = _function(name)
         positional = tuple(decode(item) for item in args)
         keyword = {str(key): decode(item) for key, item in kwargs}
+        if name in PINNED:
+            positional, keyword = _local_arguments(name, keyword)
         return encode(found(*positional, **keyword))
 
     def exposed_const(self, name: str) -> tuple:
         """One constant, wire-encoded."""
-        found = _named(name)
-        if callable(found):
-            raise TypeError(f"{name!r} is a function, not a constant; call it with call()")
-        return encode(found)
+        return encode(_constant(name))
+
+
+#: The handshake is one sha256 digest, so the secret itself never crosses.
+TOKEN_BYTES = 32
+
+
+def token(secret: str) -> bytes:
+    """What a client sends and a server expects. Shared by both ends."""
+    return hashlib.sha256(secret.encode("utf-8")).digest()
+
+
+def _authenticator(expected: bytes) -> Any:
+    """rpyc's pre-protocol hook, checking a shared secret.
+
+    Loopback is not an identity: every process on this host can reach the
+    port, and the one that reaches it can place trades. The digest is compared
+    with `hmac.compare_digest` so a wrong secret cannot be found a byte at a
+    time.
+
+    It crosses in clear, which is why it is not a substitute for the loopback
+    guard - it answers "which local process", not "which machine". On a
+    network, use the SSH tunnel or `rpyc.ssl_connect`.
+    """
+    from rpyc.utils.authenticators import AuthenticationError
+
+    def check(sock: Any) -> tuple:
+        sock.settimeout(10.0)
+        got = b""
+        try:
+            while len(got) < TOKEN_BYTES:
+                chunk = sock.recv(TOKEN_BYTES - len(got))
+                if not chunk:
+                    raise AuthenticationError("the client closed before sending a secret")
+                got += chunk
+        except OSError as exc:
+            raise AuthenticationError(f"no secret arrived: {exc}") from exc
+        sock.settimeout(None)
+        if not hmac.compare_digest(got, expected):
+            raise AuthenticationError("the shared secret does not match")
+        return sock, None
+
+    return check
 
 
 def listener(host: str, port: int) -> Any:
@@ -141,8 +283,21 @@ def listener(host: str, port: int) -> Any:
             f"Bind loopback and reach it through an SSH tunnel, or set "
             f"MT5_RPYC_ALLOW_REMOTE=1 to say you have secured it another way."
         )
+    secret = os.environ.get("MT5_RPYC_SECRET") or ""
+    if host not in LOOPBACK and not secret:
+        raise ValueError(
+            "MT5_RPYC_ALLOW_REMOTE is set but MT5_RPYC_SECRET is not. A port "
+            "reachable from the network with no handshake at all is one "
+            "anybody can trade through."
+        )
     service = type("TerminalService", (TerminalService, rpyc.Service), {})
-    return ThreadedServer(service, hostname=host, port=port, protocol_config=POLICY)
+    return ThreadedServer(
+        service,
+        hostname=host,
+        port=port,
+        protocol_config=POLICY,
+        authenticator=_authenticator(token(secret)) if secret else None,
+    )
 
 
 def serve() -> None:

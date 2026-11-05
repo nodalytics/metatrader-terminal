@@ -470,9 +470,25 @@ side reached `object.__subclasses__()` from a plain `dict` and called a
 constructor that ran in the process that handed the reference over.
 
 The terminal-side service exposes three methods — list the functions, call one,
-read a constant — and refuses any name beginning with `_`. So the reachable
-surface is "call a function on the `MetaTrader5` module", not "run code on the
-terminal host", which is what `rpyc.classic` would have been.
+read a constant — over a **closed list** of the functions the API actually
+calls, with constants matched by name pattern. So the reachable surface is not
+even "call any function on the `MetaTrader5` module", which matters because
+`initialize(path)` *launches* the executable it is handed: an open module is a
+code-execution primitive, not merely a way to place trades. The list is pinned
+by a test that re-derives it from the application's own source, so a new call
+site cannot silently find itself refused on this path alone.
+
+`initialize` and `login` are answered with **this host's** path and
+credentials whatever the client sends — they describe the terminal's machine,
+which the client is by construction not on. The client's intent is kept:
+whether to send credentials at all, which `connector.py` depends on because
+re-sending them raises an "account changed" event that disables algo trading.
+
+`MT5_RPYC_SECRET` adds a handshake, compared in constant time, before rpyc's
+own protocol. Loopback is not an identity — every process on the host can
+reach the port, and the one that reaches it can trade. It crosses in clear, so
+it answers "which local process" and not "which machine"; a non-loopback bind
+is refused without it.
 
 ### What it still is
 

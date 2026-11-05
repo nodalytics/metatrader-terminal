@@ -16,11 +16,13 @@ connection's own behaviour.
 from __future__ import annotations
 
 import datetime as dt
+import pathlib
 import threading
 
 import numpy as np
 import pytest
 
+from app.services.terminal_server import CALLS
 from app.services.terminal_wire import decode, encode
 
 rpyc = pytest.importorskip("rpyc")
@@ -248,10 +250,131 @@ def test_the_service_refuses_a_name_the_terminal_does_not_have(remote):
         remote.no_such_function
 
 
-def test_a_constant_asked_for_as_a_call_is_refused(remote):
+def test_a_constant_cannot_be_reached_through_call(remote):
     """Two methods and a clear error, rather than one method that guesses."""
-    with pytest.raises(TypeError, match="constant"):
+    with pytest.raises(AttributeError):
         remote._root.call("TRADE_RETCODE_DONE", (), ())
+
+
+# ------------------------------------------------------------- the allowlist
+
+
+def test_the_allowlist_covers_every_call_site_in_the_application():
+    """The pin on `CALLS`, re-derived from the source on every run.
+
+    An allowlist written once drifts: a new `mt5.` call site works in-process
+    and is refused over rpyc, which is a failure that only appears on the
+    option nobody runs by default. So the names are read back out of the
+    application and the difference is the assertion.
+
+    Functions are told from constants by case - MT5's constants are upper and
+    its functions are lower - rather than by asking the fake, which does not
+    implement every function the application calls.
+    """
+    import re
+
+    import app
+
+    source = pathlib.Path(app.__file__).parent
+    used = {
+        name
+        for path in source.rglob("*.py")
+        for name in re.findall(r"\bmt5\.([A-Za-z_][A-Za-z0-9_]*)", path.read_text())
+        if not name.isupper()
+    }
+
+    assert len(used) > 20, (
+        f"the derivation found only {sorted(used)} - the regex or the source "
+        f"path is wrong, and an empty derivation passes this test for the "
+        f"wrong reason"
+    )
+    missing = used - CALLS
+    assert not missing, (
+        f"these are called in-process and would be refused over rpyc: "
+        f"{sorted(missing)}. Add them to CALLS, and read the docstring there "
+        f"first - initialize() launches the executable it is handed."
+    )
+
+
+def test_a_function_outside_the_allowlist_is_refused(remote):
+    """`symbols_total` is a real MT5 function the application never calls, so
+    it is not on the list. 'Any public function on the module' would include
+    `initialize`, which launches the executable it is given."""
+    with pytest.raises(AttributeError, match="not a function this service offers"):
+        remote._root.call("symbols_total", (), ())
+
+
+def test_initialize_uses_this_hosts_path_and_credentials(remote, terminal, monkeypatch):
+    """The client names neither the terminal nor the account.
+
+    `initialize(path)` **launches** the executable it is handed, and the path
+    describes the terminal's machine, which the client is by construction not
+    on. A client-supplied path is arbitrary code; client-supplied credentials
+    point the terminal at an account of the caller's choosing.
+
+    What is kept is the client's *intent*: `connector.py` calls without
+    credentials first and retries with them only on failure, because
+    re-sending them raises an "account changed" event that switches algo
+    trading off.
+    """
+    from app.services import terminal_server
+
+    monkeypatch.setattr(terminal_server, "TERMINAL_PATH", "C:\\real\\terminal64.exe")
+    monkeypatch.setenv("MT5_LOGIN", "4242")
+    monkeypatch.setenv("MT5_PASSWORD", "the-real-one")
+    monkeypatch.setenv("MT5_SERVER", "Real-Server")
+
+    remote.initialize("C:\\attacker\\payload.exe", portable=True)
+    name, args, kwargs = terminal.calls[-1]
+    assert name == "initialize"
+    assert args == ("C:\\real\\terminal64.exe",), "the client chose the executable"
+    assert "login" not in kwargs, "credentials were sent when none were asked for"
+
+    remote.initialize("C:\\attacker\\payload.exe", login=1, password="theirs", server="Theirs")
+    _, args, kwargs = terminal.calls[-1]
+    assert args == ("C:\\real\\terminal64.exe",)
+    assert (kwargs["login"], kwargs["password"], kwargs["server"]) == (
+        4242,
+        "the-real-one",
+        "Real-Server",
+    )
+
+
+# ---------------------------------------------------------------- the secret
+
+
+def test_the_right_secret_connects_and_a_wrong_one_does_not(terminal, monkeypatch):
+    """Loopback is not an identity.
+
+    Every process on this host can reach the port and the one that reaches it
+    can place trades, so a shared secret answers "which local process". It
+    crosses in clear, which is why it does not replace the loopback guard.
+    """
+    from app.services.terminal_server import listener
+    from app.services.terminal_transport import _Remote
+
+    monkeypatch.setenv("MT5_RPYC_SECRET", "the-secret")
+    server = listener("127.0.0.1", 0)
+    threading.Thread(target=server.start, daemon=True).start()
+    try:
+        assert _Remote("127.0.0.1", server.port, 10.0).TRADE_RETCODE_DONE == 10009
+
+        monkeypatch.setenv("MT5_RPYC_SECRET", "not-the-secret")
+        with pytest.raises(Exception):
+            _Remote("127.0.0.1", server.port, 3.0)
+    finally:
+        server.close()
+
+
+def test_a_remote_bind_without_a_secret_is_refused(monkeypatch):
+    """Allowing the network and offering no handshake at all is a port anybody
+    can trade through."""
+    from app.services.terminal_server import listener
+
+    monkeypatch.setenv("MT5_RPYC_ALLOW_REMOTE", "1")
+    monkeypatch.delenv("MT5_RPYC_SECRET", raising=False)
+    with pytest.raises(ValueError, match="MT5_RPYC_SECRET"):
+        listener("0.0.0.0", 18812)
 
 
 # ------------------------------------------------------------- the two guards
