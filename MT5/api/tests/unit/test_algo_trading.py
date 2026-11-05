@@ -252,3 +252,23 @@ def test_batch_ticks_does_not_shadow_the_single_route(app_client, terminal):
     many = app_client.get("/api/v1/symbols/ticks", params={"symbols": "XAUUSD"})
     assert many.status_code == 200
     assert many.json()["ticks"]["XAUUSD"]["bid"] == one.json()["bid"]
+
+
+def test_batch_ticks_resolves_a_mixed_case_symbol(app_client, terminal):
+    """The batch route used to upper-case every name it was given.
+
+    That reports "not found" for a symbol the terminal has, which is the worst
+    shape of error: the caller is told its symbol does not exist when what
+    happened is that the route changed it.
+    """
+    import fake_mt5
+
+    terminal.symbols["Germany 40"] = fake_mt5.symbol("Germany 40", 18000.0, 18001.0)
+    terminal.ticks["Germany 40"] = fake_mt5.tick(18000.0, 18001.0)
+
+    r = app_client.get("/api/v1/symbols/ticks", params={"symbols": "Germany 40"})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert "Germany 40" in body["ticks"], body
+    assert not body["errors"], body

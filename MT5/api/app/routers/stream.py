@@ -72,6 +72,7 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
 from app.services.feed import feed
+from app.services.market_data import resolve_symbol
 from app.services.mt5_service import mt5_service
 from app.utils.config import settings
 
@@ -142,15 +143,30 @@ class Subscription:
         self.failed: Set[str] = set()
 
     def follow(self, names: List[str]) -> List[str]:
+        """Subscribe, **keeping the caller's spelling**.
+
+        MT5 symbol names are case-sensitive and many are not upper case:
+        `Germany 40`, `Wall Street 30`, `US Tech 100`, and every Deriv
+        synthetic (`Volatility 75 Index`, `Boom 1000 Index`). This used to
+        upper-case them, which is invisible on `EURUSD` and `XAUUSD` and makes
+        all the others unsubscribable - the terminal answers `Tick data for
+        'GERMANY 40' not found` and the socket reports a per-symbol stream
+        error forever.
+
+        It was invisible for as long as the desk traded eight FX pairs and two
+        metals, all of them already upper case. It surfaced the moment indices
+        were added, and would have made the whole synthetic universe
+        unreachable over the stream.
+        """
         for name in names[:MAX_SYMBOLS]:
-            clean = str(name).strip().upper()
+            clean = str(name).strip()
             if clean:
                 self.symbols.add(clean)
         return sorted(self.symbols)
 
     def drop(self, names: List[str]) -> List[str]:
         for name in names:
-            clean = str(name).strip().upper()
+            clean = str(name).strip()
             self.symbols.discard(clean)
             self.last_quote.pop(clean, None)
             self.failed.discard(clean)
@@ -289,9 +305,15 @@ async def _read_commands(socket: WebSocket, sub: Subscription) -> None:
             symbols = [symbols]
 
         if action == "subscribe":
-            await _send(socket, {"type": "subscribed", "symbols": sub.follow(symbols)})
+            # Resolved here too, and not only on the query-string path: this is
+            # the frame a long-lived consumer actually sends, so a resolver on
+            # the other path alone would fix the case that is easy to test and
+            # leave the one that runs in production.
+            wanted = [resolve_symbol(s) for s in symbols]
+            await _send(socket, {"type": "subscribed", "symbols": sub.follow(wanted)})
         elif action == "unsubscribe":
-            await _send(socket, {"type": "subscribed", "symbols": sub.drop(symbols)})
+            dropped = [resolve_symbol(s) for s in symbols]
+            await _send(socket, {"type": "subscribed", "symbols": sub.drop(dropped)})
         elif action == "ping":
             await _send(socket, {"type": "pong"})
         else:
@@ -330,7 +352,10 @@ async def stream(
     await websocket.accept()
     sub = Subscription()
     if symbols:
-        sub.follow([s for s in symbols.split(",") if s.strip()])
+        # Resolved against the terminal's own spelling before following, so a
+        # caller may send `xauusd` and a mixed-case name like `Germany 40`
+        # reaches the terminal as the terminal holds it.
+        sub.follow([resolve_symbol(s) for s in symbols.split(",") if s.strip()])
 
     pushed = feed.sources()
     if str(require or "").lower() == "ea":

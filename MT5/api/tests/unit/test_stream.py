@@ -180,3 +180,72 @@ def test_a_socket_with_the_key_is_accepted(app_client, monkeypatch):
     monkeypatch.setattr(type(config.settings), "api_key", property(lambda self: "secret"))
     with app_client.websocket_connect("/api/v1/stream?api_key=secret") as ws:
         assert ws.receive_json()["type"] == "ready"
+
+
+def test_a_subscription_keeps_the_symbols_spelling():
+    """MT5 symbol names are case-sensitive and many are not upper case.
+
+    `Germany 40`, `Wall Street 30`, `US Tech 100` and every Deriv synthetic
+    (`Volatility 75 Index`, `Boom 1000 Index`) have mixed case. Upper-casing a
+    subscription is invisible on `EURUSD` and `XAUUSD` - which is why it
+    survived a desk that traded eight FX pairs and two metals - and makes all
+    the others unsubscribable: the terminal answers `Tick data for 'GERMANY
+    40' not found` and the socket reports a per-symbol stream error forever.
+    """
+    from app.routers.stream import Subscription
+
+    sub = Subscription()
+    following = sub.follow(["Germany 40", "Volatility 75 Index", "EURUSD"])
+
+    assert "Germany 40" in following
+    assert "Volatility 75 Index" in following
+    assert "GERMANY 40" not in following
+    assert "EURUSD" in following, "an already upper-case name must be unchanged"
+
+
+def test_dropping_uses_the_same_spelling_as_following():
+    """A `drop` that normalised differently from `follow` would leave a symbol
+    subscribed forever and the socket pushing quotes nobody asked for."""
+    from app.routers.stream import Subscription
+
+    sub = Subscription()
+    sub.follow(["Wall Street 30"])
+
+    assert sub.drop(["Wall Street 30"]) == []
+
+
+def test_resolve_symbol_finds_the_terminals_own_spelling(terminal):
+    """A caller should not have to know the terminal's casing.
+
+    `xauusd` resolving to `XAUUSD` is a contract this API already had, and the
+    old implementation delivered it with `.upper()` - which works for exactly
+    the symbols that are already upper case and silently breaks every other.
+    """
+    from app.services.market_data import resolve_symbol
+
+    assert resolve_symbol(" xauusd ") == "XAUUSD"
+
+
+def test_resolve_symbol_keeps_a_mixed_case_name_the_terminal_has(terminal):
+    """The defect this exists for: `Germany 40` is the terminal's own name and
+    upper-casing it produced `Tick data for 'GERMANY 40' not found`."""
+    import fake_mt5
+
+    from app.services.market_data import resolve_symbol
+
+    terminal.symbols["Germany 40"] = fake_mt5.symbol("Germany 40", 18000.0, 18001.0)
+
+    assert resolve_symbol("Germany 40") == "Germany 40"
+    assert resolve_symbol("germany 40") == "Germany 40"
+
+
+def test_resolve_symbol_returns_an_unknown_name_unchanged(terminal):
+    """So the error names what the caller asked for.
+
+    Returning something else - an upper-cased version, or empty - makes the
+    "not found" message describe a symbol the caller never mentioned, which is
+    how a casing bug reads as a missing instrument.
+    """
+    from app.services.market_data import resolve_symbol
+
+    assert resolve_symbol("NOT A SYMBOL") == "NOT A SYMBOL"

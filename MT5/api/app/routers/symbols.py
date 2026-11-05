@@ -115,7 +115,14 @@ def get_symbol_ticks(symbols: str, use_cache: bool = True):
     caller should pass `False` for the reason `get_symbol_info_tick` documents -
     a cached tick repeated is worse than no tick.
     """
-    wanted = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    # **Resolved against the terminal, not upper-cased.** MT5 symbol names are
+    # case-sensitive and many are not upper case - `Germany 40`, `US Tech 100`,
+    # every Deriv synthetic - so `.upper()` reported "not found" for symbols the
+    # terminal holds. `resolve_symbol` keeps the old convenience that `xauusd`
+    # finds `XAUUSD` without breaking the rest.
+    from app.services.market_data import resolve_symbol
+
+    wanted = [resolve_symbol(s) for s in symbols.split(",") if s.strip()]
     if not wanted:
         raise HTTPException(
             status_code=UNPROCESSABLE,

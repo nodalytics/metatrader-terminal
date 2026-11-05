@@ -7,6 +7,48 @@ from app.utils.constants import MT5Timeframe
 from app.utils.exceptions import MT5DataError, MT5SymbolNotFoundError
 from app.utils.cache import cache_manager
 
+#: The terminal's own spelling, keyed by upper case. Rebuilt on a miss.
+#:
+#: Symbol names in MT5 are **case-sensitive and often not upper case**:
+#: `Germany 40`, `Wall Street 30`, `US Tech 100`, and every Deriv synthetic
+#: (`Volatility 75 Index`, `Boom 1000 Index`).
+_BY_UPPER: Dict[str, str] = {}
+
+
+def resolve_symbol(name: str) -> str:
+    """The terminal's spelling of `name`, or `name` when it knows no such symbol.
+
+    Callers used to be normalised with `.upper()`, which is invisible on
+    `EURUSD` and `XAUUSD` and makes every mixed-case symbol unresolvable - the
+    terminal answers `Tick data for 'GERMANY 40' not found` for a symbol it
+    holds as `Germany 40`. That survived as long as the desk traded eight FX
+    pairs and two metals and broke the moment indices were added.
+
+    Resolving rather than keeping the caller's spelling verbatim, because
+    `xauusd` resolving to `XAUUSD` is a contract this API already has and is
+    worth keeping: a caller should not have to know the terminal's casing.
+
+    The exact name is tried first, so a symbol that exists costs one lookup and
+    no map. The map is built only when a name does not resolve, and rebuilt on
+    a miss so a symbol added since the last build is found.
+    """
+    wanted = (name or "").strip()
+    if not wanted:
+        return wanted
+    if mt5.symbol_info(wanted) is not None:
+        return wanted
+    key = wanted.upper()
+    found = _BY_UPPER.get(key)
+    if found is None:
+        _BY_UPPER.clear()
+        for info in (mt5.symbols_get() or ()):
+            actual = getattr(info, "name", None)
+            if actual:
+                _BY_UPPER[str(actual).upper()] = str(actual)
+        found = _BY_UPPER.get(key)
+    return found or wanted
+
+
 class MarketDataService:
     def get_symbols(self) -> List[str]:
         cache_key = "all_symbols_list"
