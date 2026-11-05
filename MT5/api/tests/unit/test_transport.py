@@ -15,6 +15,7 @@ connection's own behaviour.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import pathlib
 import threading
@@ -135,8 +136,32 @@ def test_a_shape_with_no_wire_form_is_refused():
 # -------------------------------------------------------------- the terminal
 
 
+@pytest.fixture(scope="module")
+def served():
+    """One server for the whole file.
+
+    **A server per test is a race.** Each `listener(..., 0)` takes an
+    ephemeral port, and closing one while a connection is still open leaves
+    rpyc's accept thread reading a dead socket - which surfaces in whichever
+    test runs next as `ConnectionRefusedError` or `Bad file descriptor`, a
+    failure with nothing to do with the test reporting it. Measured: the same
+    suite gave 6 errors on one run and 2 on the next with nothing changed.
+
+    The service holds no state of its own - it reads `mt5` live - so sharing
+    it across tests shares nothing that a test could dirty.
+    """
+    from app.services.terminal_server import listener
+
+    server = listener("127.0.0.1", 0)
+    threading.Thread(target=server.start, daemon=True).start()
+    try:
+        yield server
+    finally:
+        server.close()
+
+
 @pytest.fixture()
-def remote(terminal):
+def remote(terminal, served):
     """A `_Remote` over a real connection to a real service.
 
     The service serves the fake terminal `conftest` installed, in this process,
@@ -144,15 +169,14 @@ def remote(terminal):
     actually received** - which is the only way to tell a decoded `dict` from a
     proxy that merely behaves like one.
     """
-    from app.services.terminal_server import listener
     from app.services.terminal_transport import _Remote
 
-    server = listener("127.0.0.1", 0)
-    threading.Thread(target=server.start, daemon=True).start()
+    remote = _Remote("127.0.0.1", served.port, 10.0)
     try:
-        yield _Remote("127.0.0.1", server.port, 10.0)
+        yield remote
     finally:
-        server.close()
+        with contextlib.suppress(Exception):
+            remote._conn.close()
 
 
 def test_the_connection_keeps_rpycs_restrictive_defaults(remote):
@@ -356,13 +380,18 @@ def test_the_right_secret_connects_and_a_wrong_one_does_not(terminal, monkeypatc
     monkeypatch.setenv("MT5_RPYC_SECRET", "the-secret")
     server = listener("127.0.0.1", 0)
     threading.Thread(target=server.start, daemon=True).start()
+    opened = None
     try:
-        assert _Remote("127.0.0.1", server.port, 10.0).TRADE_RETCODE_DONE == 10009
+        opened = _Remote("127.0.0.1", server.port, 10.0)
+        assert opened.TRADE_RETCODE_DONE == 10009
 
         monkeypatch.setenv("MT5_RPYC_SECRET", "not-the-secret")
         with pytest.raises(Exception):
             _Remote("127.0.0.1", server.port, 3.0)
     finally:
+        if opened is not None:
+            with contextlib.suppress(Exception):
+                opened._conn.close()
         server.close()
 
 

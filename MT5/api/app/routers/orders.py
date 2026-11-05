@@ -33,6 +33,7 @@ def send_pending_order(request: PendingOrderRequest):
         type_filling=request.type_filling,
         type_time=request.type_time,
         expiration=request.expiration,
+        stoplimit=request.stoplimit,
     )
     # `PLACED` and not `DONE`: a pending order's success is that it rests.
     # `DONE` is accepted too, because a limit at a price the market has
