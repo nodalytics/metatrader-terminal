@@ -39,14 +39,26 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Copy deployment files via SCP
+      # ── Staging, not the live directory ──────────────────────────────
+      # These files used to land straight on `DEPLOY_PATH`. That is only the
+      # right place if the service actually runs from there, and on
+      # 2026-11-05 it did not: the first successful run of this workflow
+      # copied a compose file into a directory the running stack had never
+      # used, found no `.env` beside it, wrote one from the template, and
+      # brought the bridge up on placeholder credentials. The desk then saw
+      # 4,350 `401 Invalid or missing API Key` a minute and could neither
+      # read bars nor place an order.
+      #
+      # So the files go to a staging directory and the step below copies them
+      # into whichever directory Docker says the stack is running from.
+      - name: Stage deployment files via SCP
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           source: "MT5/docker-compose.yml,MT5/.env.example,nginx/"
-          target: ${{ secrets.DEPLOY_PATH }}
+          target: "~/.mt5-deploy-staging"
           strip_components: 1
 
       - name: Deploy services and update server config
@@ -60,21 +72,68 @@ jobs:
           envs: TAG
           script: |
             set -euo pipefail
-            cd ${{ secrets.DEPLOY_PATH }}
 
-            # ── Environment ───────────────────────────────────────────────
-            # Seeded only when absent. The previous version ran
-            # `cp .env.example .env` unconditionally, which on every deploy
-            # would have overwritten the live file — MT5 login, password,
-            # server and API_KEY_SEED — with the template's placeholders. The
-            # container would then come up and fail to log in, and the cause
-            # would be a deploy that reported success.
-            if [ ! -f .env ]; then
-              cp .env.example .env
-              echo "seeded .env from the template — it needs real credentials"
+            # ── Deploy where the service runs ─────────────────────────────
+            # Docker knows where the stack was brought up from; `DEPLOY_PATH`
+            # only records where somebody once intended it to be. When the two
+            # disagree, the compose file is the one to believe — deploying to
+            # the other directory is how this workflow brought the bridge up
+            # on template credentials the first time it ever succeeded.
+            # The compose working directory is a label on the running
+            # container, so this is what Docker itself believes rather than a
+            # path parsed back out of a config file.
+            HERE="$(docker ps \
+              --format '{{.Image}}|{{.Label "com.docker.compose.project.working_dir"}}' \
+              | grep -i 'mt5-terminal' | head -1 | cut -d'|' -f2 || true)"
+            if [ -z "$HERE" ]; then
+              HERE="${{ secrets.DEPLOY_PATH }}"
+              echo "no running mt5 stack found; using DEPLOY_PATH"
             else
-              echo ".env exists; left alone"
+              echo "the mt5 stack runs from $HERE"
             fi
+            cd "$HERE"
+
+            cp -f ~/.mt5-deploy-staging/docker-compose.yml .
+            cp -f ~/.mt5-deploy-staging/.env.example .
+            if [ -d ~/.mt5-deploy-staging/nginx ]; then
+              cp -rf ~/.mt5-deploy-staging/nginx .
+            fi
+
+            # ── Environment: never invented ───────────────────────────────
+            # An earlier version copied the template over the live file on
+            # every deploy. The fix was "only when absent", and absent turned
+            # out to be the dangerous case: a missing `.env` means this is not
+            # the configured directory, or the configuration was lost, and
+            # either way the answer is to stop rather than to make one up.
+            # Placeholder credentials produce a container that starts, answers
+            # its health check, and cannot log in or authenticate a caller —
+            # a deploy that reports success over a desk that cannot trade.
+            #
+            # A `.env` byte-identical to the template is the same thing with
+            # extra steps, so it is removed rather than trusted.
+            if [ -f .env ] && cmp -s .env .env.example; then
+              echo "::warning::.env is byte-identical to the template, so it is"
+              echo "::warning::not configuration. Removing it."
+              rm -f .env
+            fi
+            if [ ! -f .env ]; then
+              echo "::error::no .env in $HERE. Refusing to invent one: a"
+              echo "::error::deploy on placeholder credentials starts a bridge"
+              echo "::error::that passes its health check and cannot trade."
+              echo "::error::Restore MT5_LOGIN, MT5_PASSWORD, MT5_SERVER and"
+              echo "::error::API_KEY_SEED (which must match the desk's), then"
+              echo "::error::re-run this workflow."
+              # Paths only, never contents. The usual cause is that the stack
+              # was brought up from somewhere other than this directory, in
+              # which case its real environment file is still on this host and
+              # the operator needs to know where - which is the one question
+              # the previous version answered by inventing an answer.
+              echo "environment files on this host, newest first:"
+              find "$HOME" -maxdepth 4 -name '.env' -printf '%TY-%Tm-%Td %TH:%TM  %p\n' \
+                2>/dev/null | sort -r | head -10 || true
+              exit 1
+            fi
+            echo ".env present; left alone"
 
             # ── Pull and restart ──────────────────────────────────────────
             echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -99,7 +158,13 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           script: |
             set -euo pipefail
-            cd ${{ secrets.DEPLOY_PATH }}
+            # The compose working directory is a label on the running
+            # container, so this is what Docker itself believes rather than a
+            # path parsed back out of a config file.
+            HERE="$(docker ps \
+              --format '{{.Image}}|{{.Label "com.docker.compose.project.working_dir"}}' \
+              | grep -i 'mt5-terminal' | head -1 | cut -d'|' -f2 || true)"
+            cd "${HERE:-${{ secrets.DEPLOY_PATH }}}"
 
             # ── Running is not the same as serving ────────────────────────
             # `sleep 20` then one check was wrong twice over. MetaTrader runs
