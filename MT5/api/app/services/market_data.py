@@ -15,7 +15,17 @@ from app.utils.cache import cache_manager
 #: (`Volatility 75 Index`, `Boom 1000 Index`).
 _BY_UPPER: Dict[str, str] = {}
 
-#: When the map was last built, and how stale it may get. `None` is never
+#: When the map was last built, and how stale it may get.
+#:
+#: **`Optional[float]`, not `float | None`.** This module has no
+#: `from __future__ import annotations`, so a module-level variable
+#: annotation is evaluated at import; the terminal runs the API under a
+#: Python older than 3.10, where `float | None` raises
+#: `TypeError: unsupported operand type(s) for |`. It took the bridge down -
+#: supervisord restarted the server every second and the whole API was a
+#: crash loop, on a container that looked up.
+#:
+#: `None` is never
 #: built, and must not be spelled `0.0`: `time.monotonic()` counts from boot,
 #: so on a machine whose uptime is under a minute `monotonic() - 0.0` is not
 #: greater than the window and the map would never be built at all. That is
@@ -27,7 +37,7 @@ _BY_UPPER: Dict[str, str] = {}
 #: fifty full `symbols_get()` calls over IPC - which a caller chooses the size
 #: of. One rebuild a minute bounds that to the same cost regardless, and a
 #: symbol listed since the last build is still found within the minute.
-_BUILT_AT: float | None = None
+_BUILT_AT: Optional[float] = None
 REBUILD_AFTER_S: float = 60.0
 
 
