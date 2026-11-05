@@ -27,8 +27,12 @@ the bridge's own FastAPI application in a process built from the bridge's
 requirements, which pin `pydantic<2.0.0` and therefore cannot hold the SDK.
 """
 
-from __future__ import annotations
-
+# No `from __future__ import annotations` here, deliberately. The MCP SDK
+# builds a tool's input schema by inspecting these signatures and calls
+# `issubclass` on each parameter's annotation; under the future import every
+# annotation is a string and that call raises, so the import would make every
+# tool unregisterable. It needs Python 3.10 or newer for `X | None` to be a
+# runtime expression, which `pyproject.toml` requires.
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -265,6 +269,22 @@ class Tools:
     def __init__(self, bridge: Bridge) -> None:
         self.bridge = bridge
 
+    async def _filling_for(self, symbol: str, requested):
+        """The fill policy to send for one symbol, and the ones it permits.
+
+        A symbol the terminal does not list is answered as "the terminal did
+        not say", which leaves the caller's preference untouched. The order
+        that follows is then refused by the bridge with a message naming the
+        symbol - which is what the agent needs - rather than this lookup
+        failing first and reporting a specification error about a call the
+        agent never made.
+        """
+        try:
+            spec = await self.bridge.symbol_info(symbol)
+        except BridgeError:
+            return resolve_filling(requested, 0)
+        return resolve_filling(requested, spec.get("filling_mode"))
+
     # ---------------------------------------------------------------- reads
 
     async def account_status(self) -> dict[str, Any]:
@@ -393,10 +413,24 @@ class Tools:
         the order tools send. `tradable` is `trade_mode`: a symbol can be
         quoting and still be close-only.
         """
-        spec = await self.bridge.symbol_info(symbol)
-        if not spec:
-            return {"symbol": symbol, "found": False, "error": "the terminal does not list this symbol"}
-        tick = await self.bridge.tick(symbol)
+        try:
+            spec = await self.bridge.symbol_info(symbol)
+        except BridgeError as exc:
+            return {
+                "symbol": symbol,
+                "found": False,
+                "error": exc.message,
+                "note": "names are case-sensitive; search_symbols lists them in the broker's own spelling",
+            }
+        try:
+            tick = await self.bridge.tick(symbol)
+        except BridgeError as exc:
+            # A symbol can be listed and not quoting - an instrument outside
+            # its session, or one the terminal has not pulled into Market
+            # Watch. The contract is still the answer to a sizing question, so
+            # it is returned with the quote marked absent rather than the whole
+            # call failing over a price the agent may not have needed.
+            tick = {"unavailable": exc.message}
         point = _number(spec.get("point")) or 0.0
         spread_points = _number(spec.get("spread"))
         bid, ask = _number(tick.get("bid")), _number(tick.get("ask"))
@@ -721,8 +755,7 @@ class Tools:
         side = (side or "").strip().upper()
         if side not in ("BUY", "SELL"):
             return {"ok": False, "accepted": False, "error": "side must be BUY or SELL"}
-        spec = await self.bridge.symbol_info(symbol)
-        used, permitted = resolve_filling(filling, spec.get("filling_mode"))
+        used, permitted = await self._filling_for(symbol, filling)
         body: dict[str, Any] = {
             "symbol": symbol,
             "volume": float(volume),
@@ -798,8 +831,7 @@ class Tools:
                 "accepted": False,
                 "error": f"order_type must be one of {', '.join(PENDING_TYPES)}",
             }
-        spec = await self.bridge.symbol_info(symbol)
-        used, permitted = resolve_filling(filling, spec.get("filling_mode"))
+        used, permitted = await self._filling_for(symbol, filling)
         body: dict[str, Any] = {
             "symbol": symbol,
             "volume": float(volume),
@@ -916,8 +948,7 @@ class Tools:
             positions = await self.bridge.positions()
             holding = next((p for p in positions if p.get("ticket") == int(ticket)), None)
             if holding is not None:
-                spec = await self.bridge.symbol_info(str(holding.get("symbol")))
-                used, permitted = resolve_filling(filling, spec.get("filling_mode"))
+                used, permitted = await self._filling_for(str(holding.get("symbol")), filling)
             raw = await self.bridge.close_position(ticket, volume=volume, type_filling=used)
             answer = _accepted(raw, what)
         except BridgeError as exc:

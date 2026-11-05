@@ -272,3 +272,22 @@ def test_batch_ticks_resolves_a_mixed_case_symbol(app_client, terminal):
     body = r.json()
     assert "Germany 40" in body["ticks"], body
     assert not body["errors"], body
+
+
+def test_an_oversized_batch_is_refused_before_the_terminal_is_touched(app_client, terminal):
+    """The cap has to come before the work it is capping.
+
+    Resolving each name is a terminal lookup, so checking the limit after
+    resolving lets a caller pay for a thousand lookups and only then be told
+    the batch was too large - the cap stops being a limit and becomes a
+    report.
+    """
+    from app.routers.symbols import MAX_TICK_BATCH
+
+    many = ",".join(f"SYM{i}" for i in range(MAX_TICK_BATCH + 1))
+    before = len(terminal.calls)
+
+    r = app_client.get("/api/v1/symbols/ticks", params={"symbols": many})
+
+    assert r.status_code == 422
+    assert len(terminal.calls) == before, "the terminal was asked before the cap applied"

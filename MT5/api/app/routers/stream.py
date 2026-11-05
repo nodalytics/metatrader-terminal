@@ -72,7 +72,7 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
 from app.services.feed import feed
-from app.services.market_data import resolve_symbol
+from app.services.market_data import resolve_symbols
 from app.services.mt5_service import mt5_service
 from app.utils.config import settings
 
@@ -309,10 +309,16 @@ async def _read_commands(socket: WebSocket, sub: Subscription) -> None:
             # the frame a long-lived consumer actually sends, so a resolver on
             # the other path alone would fix the case that is easy to test and
             # leave the one that runs in production.
-            wanted = [resolve_symbol(s) for s in symbols]
+            #
+            # **Capped before resolving, not after.** `follow` truncates to
+            # MAX_SYMBOLS, but resolving first would do the terminal lookups
+            # for every name the client sent - a cost the client chooses. The
+            # same reason it goes through the thread pool: resolution is a
+            # blocking IPC call and this handler serves every other socket.
+            wanted = await run_in_threadpool(resolve_symbols, symbols[:MAX_SYMBOLS])
             await _send(socket, {"type": "subscribed", "symbols": sub.follow(wanted)})
         elif action == "unsubscribe":
-            dropped = [resolve_symbol(s) for s in symbols]
+            dropped = await run_in_threadpool(resolve_symbols, symbols[:MAX_SYMBOLS])
             await _send(socket, {"type": "subscribed", "symbols": sub.drop(dropped)})
         elif action == "ping":
             await _send(socket, {"type": "pong"})
@@ -355,7 +361,8 @@ async def stream(
         # Resolved against the terminal's own spelling before following, so a
         # caller may send `xauusd` and a mixed-case name like `Germany 40`
         # reaches the terminal as the terminal holds it.
-        sub.follow([resolve_symbol(s) for s in symbols.split(",") if s.strip()])
+        asked = [s for s in symbols.split(",") if s.strip()][:MAX_SYMBOLS]
+        sub.follow(await run_in_threadpool(resolve_symbols, asked))
 
     pushed = feed.sources()
     if str(require or "").lower() == "ea":

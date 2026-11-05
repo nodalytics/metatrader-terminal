@@ -122,8 +122,16 @@ def app(terminal):
     handlers and routers are registered inside it, and a shared app would
     carry one test's database session factory into the next.
     """
+    from app.db.database import init_db
     from app.main import create_app
 
+    # The bridge creates its tables in its lifespan, which these tests do not
+    # start: the lifespan also starts a background scheduler and binds the EA
+    # feed's socket, neither of which a route test needs. Without this,
+    # `POST /trading/order` writes its trade row into a database with no
+    # `trade` table and the route 500s - which would look like the order
+    # itself failing.
+    init_db()
     return create_app()
 
 

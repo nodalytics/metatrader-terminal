@@ -115,15 +115,15 @@ def get_symbol_ticks(symbols: str, use_cache: bool = True):
     caller should pass `False` for the reason `get_symbol_info_tick` documents -
     a cached tick repeated is worse than no tick.
     """
-    # **Resolved against the terminal, not upper-cased.** MT5 symbol names are
-    # case-sensitive and many are not upper case - `Germany 40`, `US Tech 100`,
-    # every Deriv synthetic - so `.upper()` reported "not found" for symbols the
-    # terminal holds. `resolve_symbol` keeps the old convenience that `xauusd`
-    # finds `XAUUSD` without breaking the rest.
-    from app.services.market_data import resolve_symbol
+    from app.services.market_data import resolve_symbols
 
-    wanted = [resolve_symbol(s) for s in symbols.split(",") if s.strip()]
-    if not wanted:
+    # **Cheap work first, and the cap before the terminal is touched.** The
+    # split, the dedupe and the limit all run on the caller's own strings;
+    # resolving is a terminal lookup per name, so doing it first would let a
+    # caller pay for a thousand lookups and only then be told the batch is too
+    # large.
+    asked = [s.strip() for s in symbols.split(",") if s.strip()]
+    if not asked:
         raise HTTPException(
             status_code=UNPROCESSABLE,
             detail="symbols must name at least one symbol",
@@ -132,12 +132,23 @@ def get_symbol_ticks(symbols: str, use_cache: bool = True):
     # request. A repeated symbol is a caller bug, not ours, and silently
     # charging them two IPC round trips for it is unhelpful.
     seen: set[str] = set()
-    ordered = [s for s in wanted if not (s in seen or seen.add(s))]
-    if len(ordered) > MAX_TICK_BATCH:
+    asked = [s for s in asked if not (s in seen or seen.add(s))]
+    if len(asked) > MAX_TICK_BATCH:
         raise HTTPException(
             status_code=UNPROCESSABLE,
-            detail=f"asked for {len(ordered)} symbols; the limit is {MAX_TICK_BATCH}",
+            detail=f"asked for {len(asked)} symbols; the limit is {MAX_TICK_BATCH}",
         )
+
+    # **Resolved against the terminal, not upper-cased.** MT5 symbol names are
+    # case-sensitive and many are not upper case - `Germany 40`, `US Tech 100`,
+    # every Deriv synthetic - so `.upper()` reported "not found" for symbols the
+    # terminal holds. Resolution keeps the old convenience that `xauusd` finds
+    # `XAUUSD` without breaking the rest, and is deduplicated again because two
+    # spellings of one symbol resolve to the same name.
+    seen = set()
+    ordered = [
+        s for s in resolve_symbols(asked) if not (s in seen or seen.add(s))
+    ]
 
     ticks: Dict[str, Any] = {}
     errors: Dict[str, str] = {}

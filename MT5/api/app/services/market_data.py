@@ -1,5 +1,6 @@
 from app.services.terminal_transport import mt5
 import pandas as pd
+import time
 from datetime import datetime
 from typing import Optional, List, Dict
 from .connector import mt5_connector
@@ -7,12 +8,22 @@ from app.utils.constants import MT5Timeframe
 from app.utils.exceptions import MT5DataError, MT5SymbolNotFoundError
 from app.utils.cache import cache_manager
 
-#: The terminal's own spelling, keyed by upper case. Rebuilt on a miss.
+#: The terminal's own spelling, keyed by upper case.
 #:
 #: Symbol names in MT5 are **case-sensitive and often not upper case**:
 #: `Germany 40`, `Wall Street 30`, `US Tech 100`, and every Deriv synthetic
 #: (`Volatility 75 Index`, `Boom 1000 Index`).
 _BY_UPPER: Dict[str, str] = {}
+
+#: When the map was last built, and how stale it may get.
+#:
+#: **Rebuilding on every miss is a round trip per unknown name.** The first
+#: version did, so a batch of fifty names the terminal does not have became
+#: fifty full `symbols_get()` calls over IPC - which a caller chooses the size
+#: of. One rebuild a minute bounds that to the same cost regardless, and a
+#: symbol listed since the last build is still found within the minute.
+_BUILT_AT: float = 0.0
+REBUILD_AFTER_S: float = 60.0
 
 
 def resolve_symbol(name: str) -> str:
@@ -32,21 +43,52 @@ def resolve_symbol(name: str) -> str:
     no map. The map is built only when a name does not resolve, and rebuilt on
     a miss so a symbol added since the last build is found.
     """
-    wanted = (name or "").strip()
+    global _BUILT_AT
+
+    wanted = str(name or "").strip()
     if not wanted:
         return wanted
     if mt5.symbol_info(wanted) is not None:
         return wanted
     key = wanted.upper()
     found = _BY_UPPER.get(key)
-    if found is None:
-        _BY_UPPER.clear()
+    if found is None and (time.monotonic() - _BUILT_AT) > REBUILD_AFTER_S:
+        fresh: Dict[str, str] = {}
         for info in (mt5.symbols_get() or ()):
             actual = getattr(info, "name", None)
             if actual:
-                _BY_UPPER[str(actual).upper()] = str(actual)
+                fresh[str(actual).upper()] = str(actual)
+        # Swapped rather than cleared and refilled, so a concurrent reader
+        # never sees a half-built map.
+        _BY_UPPER.clear()
+        _BY_UPPER.update(fresh)
+        _BUILT_AT = time.monotonic()
         found = _BY_UPPER.get(key)
     return found or wanted
+
+
+def forget_symbols() -> None:
+    """Drop the cached spellings so the next lookup rebuilds.
+
+    The map is module state with a one-minute staleness window, which is right
+    for a terminal whose symbol list changes rarely and wrong for a test whose
+    terminal changes every function - without this, a symbol added by one test
+    is invisible to the next for as long as the suite takes to run.
+    """
+    global _BUILT_AT
+
+    _BY_UPPER.clear()
+    _BUILT_AT = 0.0
+
+
+def resolve_symbols(names: List[str]) -> List[str]:
+    """`resolve_symbol` over a list, for one hop into the thread pool.
+
+    The callers are async handlers and every blocking terminal call in them
+    goes through `run_in_threadpool`; resolving one name at a time would make
+    that one hop per name.
+    """
+    return [resolve_symbol(name) for name in names]
 
 
 class MarketDataService:

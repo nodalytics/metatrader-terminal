@@ -55,6 +55,12 @@ def terminal(tmp_path, monkeypatch):
     monkeypatch.setenv("API_KEY_SEED", "")
     fake_mt5.state.reset()
 
+    # The symbol-spelling map is module state with a staleness window, so a
+    # symbol added by one test would otherwise be invisible to the next.
+    from app.services.market_data import forget_symbols
+
+    forget_symbols()
+
     from app.services import connector
 
     marker = tmp_path / "login_complete"

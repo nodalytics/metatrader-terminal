@@ -249,3 +249,19 @@ def test_resolve_symbol_returns_an_unknown_name_unchanged(terminal):
     from app.services.market_data import resolve_symbol
 
     assert resolve_symbol("NOT A SYMBOL") == "NOT A SYMBOL"
+
+
+def test_resolving_many_unknown_names_rebuilds_the_map_once(terminal):
+    """A rebuild per miss is a terminal round trip per name, and the caller
+    picks how many names there are.
+
+    The first version of the resolver rebuilt on every miss, so fifty names the
+    terminal does not have became fifty full `symbols_get()` calls over IPC.
+    """
+    from app.services.market_data import resolve_symbols
+
+    before = sum(1 for call in terminal.calls if call[0] == "symbols_get")
+    resolve_symbols([f"NO SUCH SYMBOL {i}" for i in range(50)])
+    after = sum(1 for call in terminal.calls if call[0] == "symbols_get")
+
+    assert after - before <= 1, "one rebuild should serve the whole batch"
