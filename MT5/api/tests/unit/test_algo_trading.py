@@ -291,3 +291,85 @@ def test_an_oversized_batch_is_refused_before_the_terminal_is_touched(app_client
 
     assert r.status_code == 422
     assert len(terminal.calls) == before, "the terminal was asked before the cap applied"
+
+
+UNPROCESSABLE_STATUS = 422
+
+
+def test_bars_can_exclude_the_forming_bar(app_client, terminal):
+    """`start_pos=1` is how a caller says "only closed bars".
+
+    The route hardcoded position 0 and its own docstring said the last element
+    is the forming bar, whose close is simply the current price. Every client
+    had to drop that row itself and remember to - and the adapter in this
+    repository did not, so a pattern was read from a bar the next tick could
+    withdraw.
+    """
+    import fake_mt5
+
+    terminal.rates = [fake_mt5.bar(when=1_700_000_000 + i * 900) for i in range(5)]
+
+    r = app_client.get(
+        "/api/v1/symbols/rates/pos",
+        params={"symbol": "XAUUSD", "timeframe": "M15", "num_bars": 4, "start_pos": 1},
+    )
+
+    assert r.status_code == 200, r.text
+    name, args, _ = [c for c in terminal.calls if c[0] == "copy_rates_from_pos"][-1]
+    assert args[2] == 1, "the start position reached the terminal"
+    assert args[3] == 4
+
+
+def test_bars_honour_count_as_an_alias_for_num_bars(app_client, terminal):
+    """A parameter FastAPI does not declare is dropped silently.
+
+    The adapter in this repository sent `count` for months and received the
+    route's default of 100 bars with a 200 - a backfill asking for a thousand
+    got a hundred and nothing said so.
+    """
+    import fake_mt5
+
+    terminal.rates = [fake_mt5.bar(when=1_700_000_000 + i * 900) for i in range(3)]
+
+    r = app_client.get(
+        "/api/v1/symbols/rates/pos",
+        params={"symbol": "XAUUSD", "timeframe": "M15", "count": 750},
+    )
+
+    assert r.status_code == 200, r.text
+    _, args, _ = [c for c in terminal.calls if c[0] == "copy_rates_from_pos"][-1]
+    assert args[3] == 750, "the alias was dropped and the default used"
+
+
+def test_a_bar_window_accepts_every_spelling_this_bridge_uses(app_client, terminal):
+    """One window, three names across the routes: `start`/`end` here,
+    `date_from`/`date_to` on the tick range, `from_date`/`to_date` on history.
+    A caller who learned one got a silent empty from the next."""
+    import fake_mt5
+
+    terminal.rates = [fake_mt5.bar()]
+    window = {"symbol": "XAUUSD", "timeframe": "M15"}
+
+    for first, last in (("start", "end"), ("date_from", "date_to"), ("from_date", "to_date")):
+        r = app_client.get(
+            "/api/v1/symbols/rates/range",
+            params={**window, first: "2026-01-01T00:00:00", last: "2026-01-02T00:00:00"},
+        )
+        assert r.status_code == 200, f"{first}/{last}: {r.text}"
+
+
+def test_a_bar_window_missing_an_end_is_refused_not_emptied(app_client, terminal):
+    """The control: accepting every spelling must not mean accepting none of
+    them. A window with one end is a caller error, and answering `[]` would
+    read as a quiet market - which is the failure this whole change is about.
+
+    Driven through a request rather than by calling the function: the defaults
+    are FastAPI `Query` objects, so a direct call never exercises the check.
+    """
+    r = app_client.get(
+        "/api/v1/symbols/rates/range",
+        params={"symbol": "XAUUSD", "timeframe": "M15", "start": "2026-01-01T00:00:00"},
+    )
+
+    assert r.status_code == UNPROCESSABLE_STATUS, r.text
+    assert "both ends" in r.text
