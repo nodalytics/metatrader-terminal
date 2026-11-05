@@ -1,0 +1,8 @@
+# What `tests/registry` needs: this server's own runtime, plus pytest.
+#
+# Separate from `requirements-contract.txt` because the MCP SDK requires
+# pydantic 2 and the bridge pins pydantic 1, so the two suites cannot share an
+# interpreter. See README.md.
+-e .
+anyio
+pytest

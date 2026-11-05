@@ -49,6 +49,43 @@ jobs:
         run: python -m pytest tests/unit -q
 
   # ----------------------------------------------------------------
+  # Job 0b: The MCP server's tests
+  # ----------------------------------------------------------------
+  # Two suites in two virtualenvs, because they cannot share one: the bridge
+  # pins pydantic 1 and the MCP SDK requires pydantic 2. `tests/contract`
+  # imports the bridge's real FastAPI application and needs the first;
+  # `tests/registry` imports the SDK and needs the second.
+  #
+  # It does not gate the build. The MCP server is not in the image - it is
+  # launched by whatever client uses it - so a failure here is not a reason to
+  # stop publishing a terminal.
+  mcp:
+    name: MCP server tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Route contracts, against the bridge's own application
+        working-directory: mcp-server
+        run: |
+          python -m venv .venv-contract
+          .venv-contract/bin/pip install --upgrade pip
+          .venv-contract/bin/pip install -r requirements-contract.txt
+          .venv-contract/bin/python -m pytest tests/contract
+
+      - name: Registration, annotations and descriptions
+        working-directory: mcp-server
+        run: |
+          python -m venv .venv-registry
+          .venv-registry/bin/pip install --upgrade pip
+          .venv-registry/bin/pip install -r requirements-registry.txt
+          .venv-registry/bin/python -m pytest tests/registry
+
+  # ----------------------------------------------------------------
   # Job 1: Build, Test & Push
   # ----------------------------------------------------------------
   build:
