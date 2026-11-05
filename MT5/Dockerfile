@@ -5,8 +5,8 @@ RUN go mod init build && \
     go get github.com/geek1011/easy-novnc@v1.1.0 && \
     go build -o /bin/easy-novnc github.com/geek1011/easy-novnc
 
-# Final stage
-FROM docker.io/tobix/pywine:3.9
+# Build stage. Flattened into a single layer at the bottom of this file.
+FROM docker.io/tobix/pywine:3.9 AS build
 
 # ----------------------------------------------------------------------------------------------
 LABEL org.opencontainers.image.source=https://github.com/nodalytics/metatrader-terminal
@@ -133,4 +133,60 @@ RUN mkdir -p ${HOME}/Desktop && \
 # EXPOSE 5900
 EXPOSE 6901 8000
 
+CMD ["/root/entrypoint.sh"]
+
+# ----------------------------------------------------------------------------
+# Flatten
+# ----------------------------------------------------------------------------
+# **Wine is installed twice and only one copy is reachable.** The base ships
+# Wine 7.0; layer 2 above installs Wine 10.0 over it because MT5 build 5727+
+# needs 10.0 for IPC. Docker layers are additive, so the superseded 7.0 files
+# stay in the lower layer for the life of the image - measured at 9.41GB, of
+# which the Wine 10 layer alone is 2.96GB and the base's Wine layer 1.84GB.
+#
+# BuildKit has no `--squash`, so the supported way to drop what a later layer
+# overwrote is to copy the finished filesystem into a fresh image. Everything
+# that is metadata rather than files - env, workdir, entrypoint, ports - is
+# inherited through the chain and therefore has to be restated here, including
+# the base's own: `ENTRYPOINT ["/tini", "--"]` and `WINEPREFIX`, which
+# `DRIVE_C` is derived from.
+#
+# The cost is pull caching: one layer means a changed file re-pulls the whole
+# image. That is already close to the truth - the layers that change are the
+# API copy at the end, and the 9.4GB below them is pulled in full whenever the
+# base or Wine moves.
+FROM scratch
+
+COPY --from=build / /
+
+LABEL org.opencontainers.image.source=https://github.com/nodalytics/metatrader-terminal
+LABEL org.opencontainers.image.description="MetaTrader 5 Terminal (with API)"
+
+# Restated from the chain, because `scratch` inherits nothing. `PATH`,
+# `WINEDEBUG` and `WINEPREFIX` come from the base image; the rest from above.
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    DEBIAN_FRONTEND=noninteractive \
+    WINEDEBUG=-all \
+    WINEPREFIX=/opt/wineprefix \
+    HOME=/root \
+    DISPLAY=:0 \
+    SERVER_HOST=0.0.0.0 \
+    SERVER_PORT=18812 \
+    VNC_DESKTOP_NAME="MetaTrader 5" \
+    VNC_GEOMETRY=1280x800 \
+    DRIVE_C=/opt/wineprefix/drive_c \
+    STOPSIGNAL=SIGRTMIN+3 \
+    MT5_LOGIN=0 \
+    MT5_SERVER='' \
+    MT5_REQUIRE_ALGO=1 \
+    VNC_USER=mt5_user \
+    VNC_PASSWORD=password
+
+WORKDIR /root
+EXPOSE 6901 8000
+
+# `/tini` is the base image's entrypoint and reaps the processes supervisord
+# leaves behind. Losing it would leave zombies in a container that runs a
+# desktop, a terminal under Wine and an API.
+ENTRYPOINT ["/tini", "--"]
 CMD ["/root/entrypoint.sh"]

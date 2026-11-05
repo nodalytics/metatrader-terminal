@@ -136,6 +136,18 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # **The image size, reported where a change to it is visible.**
+      # On 2026-11-05 it was measured at 9.41GB, of which 2.96GB is a Wine
+      # install layered over the base's own and 1.84GB is the base's copy that
+      # the first one supersedes. A 9GB pull is also what made the deploy's
+      # 300s health window expire, so this is an operational number and not
+      # housekeeping - and nothing reported it until something went wrong.
+      - name: Report the image size
+        run: |
+          size=$(docker image inspect mt5-terminal:ci --format '{{.Size}}')
+          printf 'image: %s bytes (%.2f GB)\n' "$size" "$(echo "$size" | awk '{print $1/1e9}')"
+          echo "### Image size: $(echo "$size" | awk '{printf "%.2f GB", $1/1e9}')" >> "$GITHUB_STEP_SUMMARY"
+
       # Step 2: Smoke test
       - name: Smoke test — container starts
         run: |
