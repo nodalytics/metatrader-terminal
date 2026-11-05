@@ -265,3 +265,20 @@ def test_resolving_many_unknown_names_rebuilds_the_map_once(terminal):
     after = sum(1 for call in terminal.calls if call[0] == "symbols_get")
 
     assert after - before <= 1, "one rebuild should serve the whole batch"
+
+
+def test_the_map_builds_on_a_machine_that_has_just_booted(terminal, monkeypatch):
+    """`time.monotonic()` counts from boot, not from the epoch.
+
+    The staleness check first spelled "never built" as `0.0` and asked whether
+    `monotonic() - 0.0` exceeded the window. On a host whose uptime is under a
+    minute that is false, so the map was never built and every lowercase name
+    failed to resolve. It passed on a developer machine with days of uptime
+    and failed in CI, whose containers are seconds old.
+    """
+    from app.services import market_data
+
+    monkeypatch.setattr(market_data.time, "monotonic", lambda: 5.0)
+    market_data.forget_symbols()
+
+    assert market_data.resolve_symbol("xauusd") == "XAUUSD"

@@ -15,14 +15,19 @@ from app.utils.cache import cache_manager
 #: (`Volatility 75 Index`, `Boom 1000 Index`).
 _BY_UPPER: Dict[str, str] = {}
 
-#: When the map was last built, and how stale it may get.
+#: When the map was last built, and how stale it may get. `None` is never
+#: built, and must not be spelled `0.0`: `time.monotonic()` counts from boot,
+#: so on a machine whose uptime is under a minute `monotonic() - 0.0` is not
+#: greater than the window and the map would never be built at all. That is
+#: not hypothetical - it passed on a developer machine and failed in CI, whose
+#: containers are seconds old.
 #:
 #: **Rebuilding on every miss is a round trip per unknown name.** The first
 #: version did, so a batch of fifty names the terminal does not have became
 #: fifty full `symbols_get()` calls over IPC - which a caller chooses the size
 #: of. One rebuild a minute bounds that to the same cost regardless, and a
 #: symbol listed since the last build is still found within the minute.
-_BUILT_AT: float = 0.0
+_BUILT_AT: float | None = None
 REBUILD_AFTER_S: float = 60.0
 
 
@@ -52,7 +57,8 @@ def resolve_symbol(name: str) -> str:
         return wanted
     key = wanted.upper()
     found = _BY_UPPER.get(key)
-    if found is None and (time.monotonic() - _BUILT_AT) > REBUILD_AFTER_S:
+    stale = _BUILT_AT is None or (time.monotonic() - _BUILT_AT) > REBUILD_AFTER_S
+    if found is None and stale:
         fresh: Dict[str, str] = {}
         for info in (mt5.symbols_get() or ()):
             actual = getattr(info, "name", None)
@@ -78,7 +84,7 @@ def forget_symbols() -> None:
     global _BUILT_AT
 
     _BY_UPPER.clear()
-    _BUILT_AT = 0.0
+    _BUILT_AT = None
 
 
 def resolve_symbols(names: List[str]) -> List[str]:
