@@ -440,27 +440,49 @@ several terminals. If latency is what you want, the lever is
 `MT5/ea/TillTickFeed.mq5`: `OnTick` is a real callback, so an EA pushes **every**
 tick where a poll is a sample.
 
-Two restrictions, because an rpyc connection is a remote-code channel by
-default and this one carries trade instructions:
+### Running it
 
-- **No pickle.** `rpyc.utils.classic.obtain` would convert results in one line
-  and unpickles on this side, making any value the terminal returns a code path
-  into this process. Results are converted field-wise instead — a namedtuple's
-  `_fields` and `tuple(result)` are tuples of primitives and cross by value.
-- **Loopback unless you say otherwise.** The channel is plaintext and
-  unauthenticated, so a non-local `MT5_RPYC_HOST` is refused without
-  `MT5_RPYC_ALLOW_REMOTE=1`. Reach a remote terminal through an **SSH tunnel**
-  to `127.0.0.1`, which is how the rest of this stack reaches one, or use
-  `rpyc.ssl_connect` with mutual TLS.
+The terminal side is a service of its own, started **beside the terminal** —
+inside the Wine container, where the win32-only `MetaTrader5` package can
+import:
 
-`allow_all_attrs` is the one concession: the conversion reads `_fields`, which
-rpyc's default policy blocks as private. The narrower shape is an `exposed_`
-service on the terminal side returning plain dicts, which removes the need for
-attribute access entirely — worth doing if this is ever pointed at a host
-someone else controls.
+```sh
+MT5_RPYC_PORT=18812 python -m app.services.terminal_server
+```
 
-`rpyc` is not in `requirements.txt`: the import happens only on that branch, so
-the default install is unchanged. Add it if you intend to use the option.
+The API then runs anywhere with `MT5_TRANSPORT=rpyc`. `MT5_RPYC_BIND` chooses
+the interface it listens on and defaults to loopback.
+
+### Nothing crosses as a reference
+
+rpyc sends primitives and tuples of primitives **by value** and everything else
+— `dict` and `list` included — as a *netref*: a proxy whose every attribute
+read is another round trip. Values in both directions are therefore encoded as
+tagged tuples of primitives (`app/services/terminal_wire.py`) and rebuilt
+locally, and an unknown shape raises rather than degrading into a proxy.
+
+That is a structural property, not a policy setting, and it is what lets both
+ends keep rpyc's restrictive defaults — `allow_all_attrs` and `allow_pickle`
+off. **A tighter policy would not have been enough**: `__class__` and
+`__call__` are on rpyc's safe list in every configuration, so any reference
+handed over is a foothold. Measured under the restrictive defaults, the far
+side reached `object.__subclasses__()` from a plain `dict` and called a
+constructor that ran in the process that handed the reference over.
+
+The terminal-side service exposes three methods — list the functions, call one,
+read a constant — and refuses any name beginning with `_`. So the reachable
+surface is "call a function on the `MetaTrader5` module", not "run code on the
+terminal host", which is what `rpyc.classic` would have been.
+
+### What it still is
+
+**Loopback unless you say otherwise.** The channel is plaintext and
+unauthenticated and whoever reaches it can place trades, so a non-local
+`MT5_RPYC_HOST` — or a non-local `MT5_RPYC_BIND` — is refused without
+`MT5_RPYC_ALLOW_REMOTE=1`. Reach a remote terminal through an **SSH tunnel** to
+`127.0.0.1`, which is how the rest of this stack reaches one, or use
+`rpyc.ssl_connect` with mutual TLS. Binding this to a public interface is
+equivalent to publishing the trading password.
 
 ## 🛠️ Environment Variables
 

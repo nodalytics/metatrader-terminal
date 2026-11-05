@@ -17,36 +17,39 @@ real callback, so an EA pushes **every** tick where a poll is a sample, and a
 quote that moved and moved back between two polls never happened as far as a
 consumer is concerned.
 
-## The rpyc channel is loopback-only, and carries no pickle
+## Nothing crosses as a reference, in either direction
 
-Two deliberate restrictions, because an rpyc connection is a remote-code
-channel by default and this one would be carrying trade instructions.
+The terminal side is `terminal_server.py`, a service with three methods, and
+the values in both directions are the tagged primitive trees of
+`terminal_wire.py`. That is the whole security argument and it is structural
+rather than a policy setting: because no proxy object ever crosses, neither end
+needs to read an attribute of an object belonging to the other, so **both ends
+keep rpyc's restrictive defaults** - `allow_all_attrs` and `allow_pickle` off.
 
-**No `classic.obtain`.** That function pickles on the far side, so a
-compromised or impersonated terminal server could execute code in this process
-simply by returning a value. Results are converted field-wise instead: a
-namedtuple's `_fields` and `tuple(result)` are both tuples of primitives, which
-rpyc passes **by value** through brine with no pickling anywhere.
+The first version of this transport did neither of those things and the wire
+module records what each one cost: a `dict` argument arriving as a netref
+forced `allow_all_attrs=True`, and `rpyc.utils.classic.obtain` - which would
+convert a result in one line - unpickles on this side, making any value the far
+end returns a code path into this process.
 
-**Loopback unless explicitly overridden**, because the channel is plaintext and
-unauthenticated. A non-local host needs `MT5_RPYC_ALLOW_REMOTE=1` *and* should
-be reached the way everything else in this stack reaches a remote terminal - an
-SSH tunnel - rather than by opening the port. `rpyc.ssl_connect` with mutual
-TLS is the alternative if a tunnel is not available.
+**Tightening the policy would not have been enough.** `__class__` and
+`__call__` are on rpyc's safe list in every configuration, so any reference
+handed over is a foothold regardless: measured under the restrictive defaults,
+the far side reached `object.__subclasses__()` and called a constructor that
+ran *here*. Sending values instead is the only version of this that holds.
 
-`allow_all_attrs` stays and is the one concession: the conversion needs
-`_fields` and `_asdict`, which rpyc's default policy blocks as private. The
-narrower fix is an `exposed_` service on the terminal side returning plain
-dicts, which removes the need for attribute access at all; that is the right
-shape if this option is ever pointed at a host someone else controls.
+**Loopback unless explicitly overridden**, because the channel is still
+plaintext and unauthenticated and a caller who reaches it can trade. A non-local
+host needs `MT5_RPYC_ALLOW_REMOTE=1` *and* should be reached the way everything
+else in this stack reaches a remote terminal - an SSH tunnel - rather than by
+opening the port. `rpyc.ssl_connect` with mutual TLS is the alternative.
 
 ## Why the calls are materialised here rather than at the call sites
 
-**rpyc returns references, not values.** A namedtuple like `symbol_info()` or
-`order_send()`'s result comes back as a netref: attribute access works, and
-`FastAPI` then tries to serialise a proxy object. Primitives and tuples of
-primitives cross by value, which is the trap - the common cases look fine and
-the structured ones do not.
+**rpyc returns references, not values**, for everything but primitives and
+tuples of primitives - which is the trap, because the common cases look fine
+and the structured ones do not. A `symbol_info()` namedtuple comes back as a
+netref, attribute access works, and `FastAPI` then tries to serialise a proxy.
 
 There are around a hundred and fifteen `mt5.` call sites across twelve modules,
 eighty-four of them in `trade.py`. Materialising at each one means a hundred and
@@ -55,9 +58,10 @@ serialises oddly. Doing it in the proxy means a new call site **cannot** forget,
 which is the only version worth shipping in a service whose recurring failure
 is the silent omission.
 
-So `_Remote.__getattr__` returns a wrapper for a callable and an obtained value
+So `_Remote.__getattr__` returns a wrapper for a callable and a decoded value
 for anything else, and the constants - `TIMEFRAME_M15`, `ORDER_TYPE_BUY`,
-`TRADE_RETCODE_DONE`, which outnumber the calls - come across as plain ints.
+`TRADE_RETCODE_DONE`, which outnumber the calls - arrive as plain ints and are
+cached, because a constant does not change.
 """
 
 from __future__ import annotations
@@ -66,15 +70,13 @@ import logging
 import os
 from typing import Any
 
+from .terminal_wire import decode, encode, flag
+
 log = logging.getLogger(__name__)
 
 #: Transports this module knows. `inprocess` imports the package; `rpyc`
 #: proxies a terminal elsewhere.
 TRANSPORTS = ("inprocess", "rpyc")
-
-
-def _flag(name: str) -> bool:
-    return (os.environ.get(name) or "").strip().lower() not in ("", "0", "false", "no", "off")
 
 
 def _configured() -> str:
@@ -90,22 +92,25 @@ def _configured() -> str:
 
 
 class _Remote:
-    """`mt5` over rpyc, with every result materialised.
+    """`mt5` over rpyc, with every value decoded.
 
     Attribute access is proxied so a call site reads exactly as it does against
-    the package. A callable is wrapped; anything else - a constant - is
-    obtained immediately, because `TIMEFRAME_M15` must be an `int` by the time
-    anyone compares it.
+    the package: a record keeps `_asdict` and `_fields`, a bar table keeps its
+    column names, and a constant is an `int` by the time anyone compares it.
     """
 
     #: Hosts that need no further argument. Anything else is a plaintext,
     #: unauthenticated connection across a network and has to be asked for.
     LOCAL = frozenset({"127.0.0.1", "::1", "localhost"})
 
+    #: Class-level, so an attribute miss during `__init__` cannot recurse
+    #: through `__getattr__` into a half-built object.
+    _calls: frozenset[str] = frozenset()
+
     def __init__(self, host: str, port: int, timeout: float) -> None:
         import rpyc
 
-        if host not in self.LOCAL and not _flag("MT5_RPYC_ALLOW_REMOTE"):
+        if host not in self.LOCAL and not flag("MT5_RPYC_ALLOW_REMOTE"):
             raise ValueError(
                 f"MT5_RPYC_HOST={host!r} is not loopback. This channel is "
                 f"plaintext and unauthenticated, and it carries trade "
@@ -114,60 +119,33 @@ class _Remote:
                 f"set MT5_RPYC_ALLOW_REMOTE=1 to say you have secured it another "
                 f"way."
             )
-        # `allow_all_attrs` is needed for `_fields`/`_asdict`, which the
-        # conversion below reads and rpyc's default policy blocks as private.
-        # See the note above on the `exposed_` alternative.
-        self._conn = rpyc.connect(
-            host,
-            port,
-            config={"allow_all_attrs": True, "sync_request_timeout": timeout},
-        )
-        self._mt5 = self._conn.root.mt5
-        log.info("mt5 transport: rpyc to %s:%d", host, port)
-
-    def _obtain(self, value: Any) -> Any:
-        """A value rather than a reference, **without pickling anything.**
-
-        `rpyc.utils.classic.obtain` would do this in one line and unpickles on
-        this side, which makes any value the far side returns a code path into
-        this process. So the conversion is explicit: a namedtuple becomes a
-        plain dict built from `_fields` and `tuple(value)`, both of which are
-        tuples of primitives and cross by value through brine.
-
-        A shape this does not recognise is returned as the reference it is.
-        Attribute access on a netref still works, so a route reading one field
-        keeps working, and the alternative - raising - would fail a request over
-        a value nobody looked at.
-        """
-        if value is None or isinstance(value, (bool, int, float, str, bytes)):
-            return value
-        fields = getattr(value, "_fields", None)
-        if fields is not None:
-            # A namedtuple: MT5 returns these for ticks, symbols, positions,
-            # orders and order results.
-            names = tuple(str(name) for name in fields)
-            return dict(zip(names, tuple(value), strict=False))
-        if isinstance(value, (tuple, list)):
-            return [self._obtain(item) for item in value]
-        try:
-            # A tuple of namedtuples - `positions_get`, `history_deals_get` -
-            # arrives as a netref sequence rather than a `tuple` here.
-            return [self._obtain(item) for item in value]
-        except TypeError:
-            log.warning(
-                "rpyc returned a %r this transport cannot convert; using the "
-                "reference, whose attribute access still works",
-                type(value).__name__,
-            )
-            return value
+        # Only the timeout. Every other setting stays at rpyc's default, which
+        # is the restrictive one; `terminal_wire` exists so that is affordable.
+        self._conn = rpyc.connect(host, port, config={"sync_request_timeout": timeout})
+        self._root = self._conn.root
+        self._calls = frozenset(self._root.callables())
+        self._const: dict[str, Any] = {}
+        log.info("mt5 transport: rpyc to %s:%d, %d functions", host, port, len(self._calls))
 
     def __getattr__(self, name: str) -> Any:
-        found = getattr(self._mt5, name)
-        if not callable(found):
-            return self._obtain(found)
+        # A private name is never part of the terminal's interface, and
+        # answering one here is how a construction-time miss becomes infinite
+        # recursion instead of an `AttributeError`.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        if name not in self._calls:
+            if name not in self._const:
+                self._const[name] = decode(self._root.const(name))
+            return self._const[name]
 
         def call(*args: Any, **kwargs: Any) -> Any:
-            return self._obtain(found(*args, **kwargs))
+            return decode(
+                self._root.call(
+                    name,
+                    tuple(encode(arg) for arg in args),
+                    tuple((str(key), encode(value)) for key, value in kwargs.items()),
+                )
+            )
 
         call.__name__ = name
         return call

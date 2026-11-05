@@ -1,9 +1,20 @@
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query
 from app.services.mt5_service import mt5_service
 from app.utils.exceptions import MT5SymbolNotFoundError
 from typing import Any, Dict, List
 from datetime import datetime
 from app.services.terminal_transport import mt5
+
+#: 422, as a literal.
+#:
+#: Starlette renamed `HTTP_422_UNPROCESSABLE_ENTITY` to `..._CONTENT`, and
+#: `requirements.txt` pins neither `fastapi` nor `starlette`. So two installs
+#: that both satisfy the requirements disagree about which name exists, and on
+#: the older one `status.HTTP_422_UNPROCESSABLE_CONTENT` raises
+#: `AttributeError` *inside the handler* - which the exception middleware turns
+#: into a **500** at exactly the point the route meant to explain a bad
+#: request. Measured on starlette 0.27.0; CI resolves a newer one and passes.
+UNPROCESSABLE = 422
 
 router = APIRouter(prefix="/symbols", tags=["Symbols"])
 
@@ -107,7 +118,7 @@ def get_symbol_ticks(symbols: str, use_cache: bool = True):
     wanted = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     if not wanted:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=UNPROCESSABLE,
             detail="symbols must name at least one symbol",
         )
     # Deduplicate but keep the caller's order, so the response reads like the
@@ -117,7 +128,7 @@ def get_symbol_ticks(symbols: str, use_cache: bool = True):
     ordered = [s for s in wanted if not (s in seen or seen.add(s))]
     if len(ordered) > MAX_TICK_BATCH:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=UNPROCESSABLE,
             detail=f"asked for {len(ordered)} symbols; the limit is {MAX_TICK_BATCH}",
         )
 
