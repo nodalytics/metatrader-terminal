@@ -22,6 +22,9 @@ class MT5Service:
     def send_market_order(self, *args, **kwargs):
         return trade_service.send_market_order(*args, **kwargs)
 
+    def check_market_order(self, *args, **kwargs):
+        return trade_service.check_market_order(*args, **kwargs)
+
     def send_pending_order(self, *args, **kwargs):
         return trade_service.send_pending_order(*args, **kwargs)
 

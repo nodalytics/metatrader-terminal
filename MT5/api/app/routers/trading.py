@@ -139,8 +139,55 @@ def modify_sl_tp(
 
 @router.get("/order_check/{symbol}")
 def check_order(symbol: str):
+    """The symbol's **specification**. Despite the name, it checks no order.
+
+    Kept at this path and this shape because callers depend on it, but the
+    name has misled: it accepts no order to check and ignores any query
+    parameters describing one, so asking "would BUY 0.2 be accepted" returned a
+    symbol record and no answer. `POST /trading/order_check` is the route that
+    answers that.
+
+    What is here is still worth having - `volume_min`, `volume_step`,
+    `trade_stops_level` and `filling_mode` are the limits an order has to
+    respect - so this is the specification and that is the verdict.
+    """
     mt5_service.initialize()
     info = mt5.symbol_info(symbol)
     if not info:
         raise MT5SymbolNotFoundError(f"Symbol '{symbol}' not found")
     return info._asdict()
+
+
+@router.post("/order_check")
+def check_market_order(request: MarketOrderRequest):
+    """Ask the terminal about an order **without placing it**.
+
+    Returns `mt5.order_check`: a retcode, the terminal's comment, the margin
+    the order would require, and the balance, equity and free margin it would
+    leave. So a client can size against free margin, and refuse an order
+    before any money moves, instead of discovering it from a refusal.
+
+    **Built from the same request the send builds** - `TradeService.
+    market_request` - which is the only thing that makes the answer worth
+    anything: a check assembled from its own copy of that dict would answer
+    about a different order, and would go on answering plausibly while the two
+    drifted apart.
+
+    Takes the same model as `POST /trading/order`, so a body that passes here
+    passes there: the comment limit, the volume step and the side pattern are
+    all checked by the same validation. A refused check is a **200** carrying
+    its retcode - "this would not be accepted, and here is why" is the
+    successful outcome of asking - while a malformed request is a 422 and a
+    terminal that cannot answer at all is a 400 with `kind: refusal`.
+    """
+    return mt5_service.check_market_order(
+        symbol=request.symbol,
+        volume=request.volume,
+        order_type=request.order_type,
+        sl=request.sl,
+        tp=request.tp,
+        deviation=request.deviation,
+        comment=request.comment,
+        magic=request.magic,
+        type_filling=request.type_filling,
+    )

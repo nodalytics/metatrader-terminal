@@ -151,3 +151,27 @@ TRAILING_STOP_STEPS = [
 #: than the caller sent; a 422 naming the field and the limit is something a
 #: client can act on.
 ORDER_COMMENT_MAX = 28
+
+#: Retcodes a caller can usefully send the *same request* again for.
+#:
+#: **The distinction a client needs and could not make.** Every refusal is one
+#: HTTP 400 with a number in it, so a client either retried everything - which
+#: on `10019 not enough money` or `10018 market closed` is a loop that cannot
+#: succeed - or retried nothing, which gives up on a requote. The set is
+#: deliberately small: a code is in here only if the request is unchanged and
+#: the condition is expected to clear by itself within seconds.
+#:
+#: `10027 Autotrading disabled by client terminal` is **not** here, although it
+#: clears: it clears when somebody presses Ctrl+E, not with time, so a retry
+#: loop on it is a busy-wait on a human. `/terminal/can-trade` is what a client
+#: should read for that.
+RETRYABLE_RETCODES = frozenset({
+    10004,  # Requote
+    10012,  # Request canceled by timeout
+    10020,  # Prices changed
+    10021,  # There are no quotes to process the request
+    10024,  # Too frequent requests
+    10028,  # Request locked for processing
+    10029,  # Order or position frozen
+    10031,  # No connection with the trade server
+})

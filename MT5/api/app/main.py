@@ -8,8 +8,11 @@ except ImportError:
     sys.exit(1)
 
 from fastapi import FastAPI, Request, Depends
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.routers import trading, auth, account, positions, symbols, history, terminal, orders, stream
 from app.dependencies.auth import verify_api_key
 from app.db.database import init_db
@@ -91,15 +94,81 @@ def create_app() -> FastAPI:
         except Exception:
             mt5_code, mt5_msg = None, None
 
-        body = {"error": exc.message}
+        # `kind` and `retryable` first, and on every error body this service
+        # produces. A broker refusing a trade and a bad API key are both 4xx,
+        # so a client that wanted to tell them apart had to match on the text
+        # of `error` - and one client reported a broken deployment as an
+        # ordinary bad trade because of it. These two are what a client
+        # branches on; `error` is for a person.
+        body = {
+            "kind": exc.kind,
+            "retryable": exc.is_retryable(),
+            "error": exc.message,
+        }
         if exc.code is not None:
             body["code"] = exc.code
         if mt5_code:
             body["mt5_code"] = mt5_code
             body["mt5_msg"] = mt5_msg
 
-        logger.error(f"MT5 error [{exc.__class__.__name__}]: {exc.message} (mt5={mt5_code})")
+        logger.error(
+            f"MT5 error [{exc.__class__.__name__}] kind={exc.kind} "
+            f"retryable={exc.is_retryable()}: {exc.message} (mt5={mt5_code})"
+        )
         return JSONResponse(status_code=exc.status_code, content=body)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        """A malformed request, in the same envelope as everything else.
+
+        **FastAPI's default 422 body has a different shape from this
+        service's errors** - `{"detail": [...]}` against `{"error": ...}` - so
+        a client had to parse two formats to find out what went wrong. It is
+        also the status a client now gets for an over-long order `comment`, a
+        case where knowing it is `validation` and not `refusal` is the
+        difference between fixing the request and retrying it forever.
+
+        `detail` is kept verbatim alongside, because it names the offending
+        field and nothing else here does.
+        """
+        return JSONResponse(
+            status_code=422,
+            content={
+                "kind": "validation",
+                "retryable": False,
+                "error": "the request was rejected before the terminal saw it",
+                "detail": jsonable_encoder(exc.errors()),
+            },
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+        """`HTTPException` in the same envelope, so auth is machine-readable.
+
+        `dependencies/auth.py` raises a bare 401 and routes raise 404s, which
+        came back as `{"detail": ...}`. A 401 is the one error a client must
+        never confuse with a trading refusal: retrying it cannot help, and
+        treating it as "the broker said no" hides a misconfigured deploy
+        behind a bad-looking strategy.
+        """
+        kind = {401: "auth", 403: "auth", 404: "not_found", 429: "rate_limit"}.get(
+            exc.status_code, "internal" if exc.status_code >= 500 else "validation"
+        )
+        # **`detail` is kept, not replaced.** The new fields are additive on
+        # purpose: three tests and any existing client read `detail` from an
+        # `HTTPException`, and breaking them to tidy a key would be paying for
+        # the envelope with an outage. `error` carries the same text under the
+        # name the rest of this service uses.
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "kind": kind,
+                "retryable": exc.status_code in (429, 503),
+                "error": str(exc.detail),
+                "detail": exc.detail,
+            },
+            headers=getattr(exc, "headers", None),
+        )
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
@@ -108,7 +177,7 @@ def create_app() -> FastAPI:
         except Exception:
             mt5_code, mt5_msg = None, None
 
-        body = {"error": str(exc)}
+        body = {"kind": "internal", "retryable": False, "error": str(exc)}
         if mt5_code:
             body["mt5_code"] = mt5_code
             body["mt5_msg"] = mt5_msg

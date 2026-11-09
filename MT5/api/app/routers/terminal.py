@@ -140,6 +140,24 @@ def get_algo_trading() -> Dict[str, Any]:
     return {"trade_allowed": allowed}
 
 
+@router.get("/can-trade")
+def get_can_trade() -> Dict[str, Any]:
+    """Whether an order placed right now could fill, and why not.
+
+    **The route to read before trading, in place of three that each answer
+    part of it.** `/account/health`, `/terminal/ping` and
+    `account_info().trade_allowed` have all read green over a terminal that
+    would accept nothing, because the flag that decides is
+    `terminal_info().trade_allowed` and they do not consult it. This is the
+    conjunction with the reason attached.
+
+    Always 200, including when the answer is no: "you cannot trade, and here is
+    which of the two flags is false" is the successful outcome of asking. A
+    client monitoring tradability should not have to treat an error as data.
+    """
+    return algo.tradability()
+
+
 @router.post("/algo-trading")
 def set_algo_trading(request: AlgoTradingRequest) -> Dict[str, Any]:
     """Put AutoTrading where `enabled` says, and report whether it moved.
