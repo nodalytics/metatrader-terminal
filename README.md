@@ -425,6 +425,92 @@ cannot set headers on a WebSocket handshake.
 > [!TIP]
 > Full interactive docs with request/response schemas are available at `/docs` (Swagger UI) once the API is running.
 
+## 🧭 Driving this API from a client
+
+Four things a client needs and could not previously get. Each one existed as a
+fact this service already held and would not state.
+
+### Every error says what kind it is
+
+Every error body now carries `kind` and `retryable` before anything else:
+
+```json
+{"kind": "refusal", "retryable": false, "code": 10019,
+ "error": "Order failed: not enough money", "mt5_msg": "..."}
+```
+
+`kind` is a closed set — `validation`, `refusal`, `terminal`, `not_found`,
+`rate_limit`, `auth`, `internal` — so a client switches on a field instead of
+matching the text of `error`. A broker refusing a trade and a bad API key were
+both 4xx, and one client reported a broken deployment as an ordinary bad trade
+because the only difference was prose.
+
+`retryable` is per **retcode** for a refusal, not per class: a requote clears
+in a second, not having the money does not. `10027` is deliberately *not*
+retryable — it clears when somebody presses Ctrl+E, not with time, so a retry
+loop on it is a busy-wait on a human.
+
+`detail` is still present on validation and `HTTPException` bodies. The new
+fields are additive.
+
+### `POST /trading/order_check` — ask without placing
+
+`GET /trading/order_check/{symbol}` never checked an order: it returns
+`symbol_info` and ignores any order described to it. It keeps that path and
+payload because callers depend on it, and the route that answers the question
+is the POST:
+
+```sh
+curl -X POST .../api/v1/trading/order_check -H "X-API-Key: $KEY" \
+  -d '{"symbol":"XAUUSD","order_type":"BUY","volume":0.1,"sl":0.0}'
+# -> retcode, comment, margin, balance, equity, margin_free
+```
+
+It takes the **same model** as `POST /trading/order`, and is built from the
+same `MqlTradeRequest` the send builds — a check assembled from its own copy
+of that dict would answer about a different order and go on looking right
+while the two drifted. So a client can size against free margin and refuse an
+order before any money moves. A refused check is a 200 carrying its retcode:
+"this would not be accepted, and here is why" is the successful outcome.
+
+### Orders are checked against the symbol's own limits
+
+`symbol_info` carries `volume_min`, `volume_max` and `volume_step`, and
+nothing compared an order with them — so an off-step volume reached the
+terminal and came back `10014 Invalid volume`, which says neither which limit
+nor what would be allowed:
+
+```json
+{"kind": "validation", "retryable": false,
+ "error": "volume 0.015 is not a multiple of volume_step 0.01 for XAUUSD; nearest is 0.02"}
+```
+
+A 422, because the terminal never saw it. Same class of defect as the order
+`comment`, which was refused at 31 characters with `mt5_code -2` and nothing
+naming the field.
+
+### `GET /terminal/can-trade` — one answer, with the reason
+
+MT5 has **two** different flags both spelled `trade_allowed` and only one of
+them decides whether an order fills:
+
+| flag | what it is |
+|---|---|
+| `terminal_info().trade_allowed` | the AutoTrading button. Off ⇒ every order returns `10027` |
+| `account_info().trade_allowed` | the broker's permission. Can be `true` over a terminal that refuses everything |
+
+```json
+{"can_trade": false,
+ "reason": "autotrading is disabled in the client terminal (press Ctrl+E, or POST /terminal/algo-trading)",
+ "terminal_trade_allowed": false, "account_trade_allowed": true}
+```
+
+Always 200, including when the answer is no — a client monitoring tradability
+should not have to treat an error as data. `GET /account/health` now reports
+`can_trade` alongside its `status`; `status` keeps its three existing values,
+because container healthchecks compare against them and a terminal a Ctrl+E
+would fix should not restart the container.
+
 ## 🔧 How It Works
 
 ### Docker Build

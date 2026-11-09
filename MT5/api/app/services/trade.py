@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional, List, Dict
 from app.services.terminal_transport import mt5
 from .connector import mt5_connector
-from app.utils.exceptions import MT5OrderError, MT5SymbolNotFoundError
+from app.utils.exceptions import MT5OrderError, MT5SymbolNotFoundError, MT5ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -80,20 +80,67 @@ def _sent(result, what: str):
         code=int(code),
     )
 
+def validate_against_symbol(symbol: str, info, *, volume: float) -> None:
+    """Refuse an order the symbol's own specification already rules out.
+
+    **Same class of defect as the order comment.** `symbol_info` carries
+    `volume_min`, `volume_max` and `volume_step`, and nothing checked an order
+    against them - so a volume of 0.003 on a 0.01-step symbol went to the
+    terminal and came back `10014 Invalid volume`, a number that does not say
+    which of the three it broke or what the allowed value is. The caller then
+    has to fetch `symbol_info` and work it out, which is the work this service
+    exists to have already done.
+
+    Raised as a **validation** failure and not a refusal: the terminal never
+    saw it, retrying it cannot help, and `kind` is what a client branches on.
+
+    `volume_step` is compared with a tolerance against the step itself rather
+    than with `%`: steps are values like 0.01 and binary floating point makes
+    `0.03 % 0.01` a number just under the step rather than zero, which would
+    refuse a volume every broker accepts.
+    """
+    if info is None:
+        return
+
+    low = float(getattr(info, "volume_min", 0.0) or 0.0)
+    high = float(getattr(info, "volume_max", 0.0) or 0.0)
+    step = float(getattr(info, "volume_step", 0.0) or 0.0)
+    volume = float(volume)
+
+    if low and volume < low:
+        raise MT5ValidationError(
+            f"volume {volume:g} is below volume_min {low:g} for {symbol}"
+        )
+    if high and volume > high:
+        raise MT5ValidationError(
+            f"volume {volume:g} is above volume_max {high:g} for {symbol}"
+        )
+    if step > 0:
+        steps = volume / step
+        if abs(steps - round(steps)) > 1e-6:
+            nearest = round(steps) * step
+            raise MT5ValidationError(
+                f"volume {volume:g} is not a multiple of volume_step {step:g} "
+                f"for {symbol}; nearest is {nearest:g}"
+            )
+
+
 class TradeService:
-    def send_market_order(self, symbol: str, volume: float, order_type: str, sl: float, tp: float = None,
-                          deviation: int = 20, comment: str = '', magic: int = 0, type_filling: str = 'FOK'):
+    def market_request(self, symbol: str, volume: float, order_type: str, sl: float, tp: float = None,
+                       deviation: int = 20, comment: str = '', magic: int = 0, type_filling: str = 'FOK'):
+        """The `MqlTradeRequest` a market order is sent as.
+
+        **Extracted so that checking an order and sending it cannot diverge.**
+        `order_check` is only worth having if it validates the request that
+        would actually be sent; a check built from its own copy of this dict
+        would answer about a different order, and would keep answering
+        correctly while the two drifted apart.
+        """
         mt5_connector.initialize()
 
         order_type_map = {
             'BUY': mt5.ORDER_TYPE_BUY,
             'SELL': mt5.ORDER_TYPE_SELL
-        }
-
-        filling_map = {
-            'IOC': mt5.ORDER_FILLING_IOC,
-            'FOK': mt5.ORDER_FILLING_FOK,
-            'RETURN': mt5.ORDER_FILLING_RETURN
         }
 
         mt5.symbol_select(symbol, True)
@@ -102,11 +149,12 @@ class TradeService:
             raise MT5SymbolNotFoundError(f"Failed to get tick for {symbol}")
 
         info = mt5.symbol_info(symbol)
+        validate_against_symbol(symbol, info, volume=volume)
         filling = resolve_filling(type_filling, getattr(info, "filling_mode", 0) if info else 0)
-            
+
         # Correctly mapping price for long/short
         price = tick.ask if order_type.upper() == 'BUY' else tick.bid
-        
+
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
@@ -120,10 +168,43 @@ class TradeService:
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling,
         }
-        
+
         if tp is not None:
             request["tp"] = float(tp)
-            
+        return request
+
+    def check_market_order(self, **kwargs):
+        """What the terminal says about an order **without placing it**.
+
+        `GET /trading/order_check/{symbol}` has never done this: it returns
+        `symbol_info` and ignores any order you describe to it, so a caller
+        asking "would this be accepted, and what margin does it need" got a
+        symbol specification and no answer. `mt5.order_check` is the function
+        that answers, and it returns the margin the order would require, the
+        balance and equity it would leave, and a retcode - so a client can
+        size against free margin and refuse an order before the money moves.
+
+        A refused *check* is returned rather than raised: "this would not be
+        accepted, and here is why" is the successful outcome of asking.
+        """
+        request = self.market_request(**kwargs)
+        checked = mt5.order_check(request)
+        if checked is None:
+            code, message = mt5.last_error()
+            raise MT5OrderError(f"order_check was not answered: {message}", code=code)
+        answer = checked._asdict()
+        # `request` comes back as a nested MqlTradeRequest on some builds and a
+        # dict on others; it is the echo of what was asked and a client already
+        # knows it, so it is dropped rather than encoded inconsistently.
+        answer.pop("request", None)
+        return answer
+
+    def send_market_order(self, symbol: str, volume: float, order_type: str, sl: float, tp: float = None,
+                          deviation: int = 20, comment: str = '', magic: int = 0, type_filling: str = 'FOK'):
+        request = self.market_request(
+            symbol=symbol, volume=volume, order_type=order_type, sl=sl, tp=tp,
+            deviation=deviation, comment=comment, magic=magic, type_filling=type_filling,
+        )
         result = _sent(mt5.order_send(request), "Order")
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             raise MT5OrderError(f"Order failed: {result.comment}", code=result.retcode)

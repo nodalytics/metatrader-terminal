@@ -97,6 +97,56 @@ def state() -> bool | None:
     return None if allowed is None else bool(allowed)
 
 
+def tradability() -> dict:
+    """**One answer to "can I place an order right now", and why not.**
+
+    MT5 has two different flags both spelled `trade_allowed` and only one of
+    them decides whether an order fills:
+
+    * `terminal_info().trade_allowed` is the AutoTrading button in the client
+      terminal. With it off, every submission comes back `10027`.
+    * `account_info().trade_allowed` is the broker's permission on the
+      account. A terminal can answer `True` here and refuse every order.
+
+    A client reading the wrong one has no symptom until it places a trade, and
+    this service has already shipped a case where `/account/health` said
+    `healthy`, `/terminal/ping` answered 200 and `account_info` said `True`
+    while nothing could be traded at all. So `can_trade` is the conjunction,
+    `reason` names the first thing that is false, and both inputs are returned
+    beside it so a caller can still see which.
+
+    `None` from either flag is **not** `False`: it means the terminal did not
+    answer, which is a different thing from a terminal that answered no, and
+    conflating them is what the blind-press bug was made of.
+    """
+    terminal = state()
+    try:
+        account = mt5.account_info()
+    except Exception:  # pragma: no cover - the binding raising is environmental
+        account = None
+    account_allowed = None if account is None else bool(getattr(account, "trade_allowed", None))
+
+    if terminal is None or account_allowed is None:
+        reason = "the terminal did not answer; neither flag could be read"
+        can = False
+    elif not terminal:
+        reason = "autotrading is disabled in the client terminal (press Ctrl+E, or POST /terminal/algo-trading)"
+        can = False
+    elif not account_allowed:
+        reason = "the broker does not permit trading on this account"
+        can = False
+    else:
+        reason = ""
+        can = True
+
+    return {
+        "can_trade": can,
+        "reason": reason,
+        "terminal_trade_allowed": terminal,
+        "account_trade_allowed": account_allowed,
+    }
+
+
 def press() -> None:
     """Send Ctrl+E into the VNC session the terminal is drawing on."""
     from vncdotool import api
