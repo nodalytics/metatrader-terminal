@@ -41,6 +41,8 @@ class _Spec:
         self.volume_min = kw.get("volume_min", 0.01)
         self.volume_max = kw.get("volume_max", 100.0)
         self.volume_step = kw.get("volume_step", 0.01)
+        self.trade_stops_level = kw.get("trade_stops_level", 0)
+        self.point = kw.get("point", 0.01)
 
 
 # ───────────────────────────────── 1. the error envelope
@@ -245,6 +247,90 @@ def test_a_symbol_that_states_no_limits_is_not_second_guessed():
 
     validate_against_symbol("EURUSD", None, volume=0.1)
     validate_against_symbol("EURUSD", _Spec(volume_min=0.0, volume_max=0.0, volume_step=0.0), volume=7.0)
+
+
+# ───────────────────────────────── 3b. the stops level
+
+
+def test_a_stop_inside_the_brokers_floor_is_refused_with_its_own_retcode():
+    """`trade_stops_level` is a hard floor and it is **not uniform**.
+
+    Read off the live terminal on 2026-11-09, in points: Australia 200 **500**,
+    Wall Street 30 300, US Tech 100 150, US SP 500 **50**. Five price points of
+    required distance on one index against half a point on another, same broker
+    and same clock. Inside it the order is refused `10016 Invalid stops`, a
+    code naming neither the distance required nor which leg broke it.
+    """
+    from app.services.trade import validate_stops
+    from app.utils.exceptions import MT5ValidationError
+
+    spec = _Spec(trade_stops_level=500, point=0.01)  # Australia 200's floor: 5.00
+    with pytest.raises(MT5ValidationError, match="sl") as caught:
+        validate_stops("Australia 200", spec, price=8000.0, sl=7998.0)
+    assert caught.value.code == 10016, "a client reads `code` to get a retcode"
+    with pytest.raises(MT5ValidationError, match="tp"):
+        validate_stops("Australia 200", spec, price=8000.0, tp=8001.0)
+
+
+def test_the_floor_is_points_times_point_size_and_not_a_raw_point_count():
+    """**The unit, asserted.** Comparing a price distance against a raw point
+    count is the error that read a 476% round trip off a spread column once.
+
+    A stop 4.00 away is inside Australia 200's 500-point floor (5.00) and
+    outside US SP 500's 50-point floor (0.50). If the floor were read as raw
+    points, both would be refused and the second assertion fails.
+    """
+    from app.services.trade import validate_stops
+    from app.utils.exceptions import MT5ValidationError
+
+    with pytest.raises(MT5ValidationError):
+        validate_stops("Australia 200", _Spec(trade_stops_level=500, point=0.01),
+                       price=8000.0, sl=7996.0)
+    validate_stops("US SP 500", _Spec(trade_stops_level=50, point=0.01),
+                   price=6800.0, sl=6796.0)
+
+
+def test_a_stop_at_the_floor_and_an_unset_one_are_both_accepted():
+    """**The control, and the second half of it is the important half.**
+
+    `sl=0.0` is not a stop at price zero - it is how MT5 spells "no stop", and
+    the bridge's market-order model *requires* `sl` and sends `0.0` when the
+    caller named none. Refusing those would refuse every unprotected order,
+    which is most of them. A distance exactly at the floor is allowed by the
+    broker, so it must be allowed here.
+    """
+    from app.services.trade import validate_stops
+
+    spec = _Spec(trade_stops_level=150, point=0.01)  # US Tech 100: 1.50
+    validate_stops("US Tech 100", spec, price=25000.0, sl=24998.5)  # exactly 1.50
+    validate_stops("US Tech 100", spec, price=25000.0, sl=24990.0)  # well outside
+    validate_stops("US Tech 100", spec, price=25000.0, sl=0.0)      # no stop
+    validate_stops("US Tech 100", spec, price=25000.0, sl=None, tp=None)
+    # No floor stated, and no specification at all: the terminal did not say,
+    # which is not a floor of zero to enforce.
+    validate_stops("X", _Spec(trade_stops_level=0, point=0.01), price=100.0, sl=99.999)
+    validate_stops("X", None, price=100.0, sl=99.999)
+
+
+def test_the_order_route_applies_the_stops_floor_and_sends_nothing(app_client, terminal):
+    """That it is **wired**, like the volume check - and that MT5 is not asked.
+
+    The fake symbol ships `trade_stops_level=0`, so the floor is set on it here
+    rather than relying on a default that would make this pass for the wrong
+    reason.
+    """
+    from tests.unit import fake_mt5
+
+    terminal.symbols["XAUUSD"] = fake_mt5.symbol(trade_stops_level=500, point=0.01)
+    tick = terminal.ticks["XAUUSD"]
+    answer = app_client.post(
+        "/api/v1/trading/order", json={**ORDER, "sl": float(tick.ask) - 0.5}
+    )
+    assert answer.status_code == 422, answer.text
+    body = answer.json()
+    assert body["kind"] == "validation"
+    assert body["code"] == 10016
+    assert not [c for c in terminal.calls if c[0] == "order_send"], "it was sent anyway"
 
 
 # ───────────────────────────────── 4. one can-I-trade answer
