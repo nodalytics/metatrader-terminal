@@ -1,6 +1,18 @@
+# `uv_build`, matching `nautilus-mt5`. Two backends in one workspace is two
+# sets of packaging behaviour to remember for no gain; the wheel this produces
+# is the same one setuptools produced from the same `mt5_mcp/` tree.
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.9,<0.10"]
+build-backend = "uv_build"
+
+# The package directory sits beside this file rather than under a `src/`, which
+# is the layout that already exists here. `module-name` is stated because
+# `uv_build` otherwise derives it from the project name and looks for
+# `mt5_mcp_server/`: the distribution is `mt5-mcp-server` and the import is
+# `mt5_mcp`, which is also what `[project.scripts]` below points at.
+[tool.uv.build-backend]
+module-root = ""
+module-name = "mt5_mcp"
 
 [project]
 name = "mt5-mcp-server"
@@ -18,8 +30,8 @@ dependencies = [
     "httpx>=0.27",
 ]
 
+[project.urls]
+Homepage = "https://github.com/nodalytics/metatrader-terminal"
+
 [project.scripts]
 mt5-mcp = "mt5_mcp.server:main"
-
-[tool.setuptools.packages.find]
-include = ["mt5_mcp*"]

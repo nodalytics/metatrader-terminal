@@ -47,13 +47,51 @@ Two things that are easy to get wrong and hard to see afterwards:
 ## 📁 Repository Structure
 
 ```text
-├── .github/workflows/  # CI/CD pipelines (Build/Test & Deploy)
+├── .github/workflows/  # CI/CD pipelines (Build/Test, Deploy, Packages)
 ├── MT5/                # Dockerized MT5 Terminal & FastAPI code
+├── nautilus-mt5/       # NautilusTrader adapter    (installable package)
+├── mcp-server/         # MCP server over the API   (installable package)
 ├── docs/               # In-depth setup and CI/CD documentation
 ├── nginx/              # Nginx site configurations and snippets
 ├── Server/             # Legacy/Development server logic
+├── pyproject.toml      # uv workspace root (the two packages above)
 └── README.md           # You are here
 ```
+
+## 📦 The two installable packages
+
+`nautilus-mt5` and `mcp-server` are clients of the API in this repository and
+are built as packages, so another project can depend on one without vendoring
+a copy of it. They are the members of a uv workspace rooted at `pyproject.toml`
+and share one `uv.lock`, which is the point: both carry their own `bridge.py`
+against the same HTTP surface, and one resolution means a wire-level dependency
+cannot drift between them without the lock saying so.
+
+```sh
+uv sync                              # resolve both, into ./.venv
+uv build --package nautilus-mt5      # wheel + sdist into ./dist
+uv build --package mt5-mcp-server
+pip install ./nautilus-mt5           # or install one directly
+```
+
+Depending on one from another repository, without publishing anything:
+
+```toml
+dependencies = [
+  "nautilus-mt5 @ git+https://github.com/nodalytics/metatrader-terminal@main#subdirectory=nautilus-mt5",
+]
+```
+
+The distribution names and the import names differ for the MCP server - the
+distribution is `mt5-mcp-server` and the import is `mt5_mcp`, with a `mt5-mcp`
+console script. `.github/workflows/packages.yml` builds each wheel, installs it
+into an empty environment and imports it, because a wheel that builds is not a
+wheel that works.
+
+**`MT5/api` is not a member and cannot be.** It pins `pydantic<2.0.0` where the
+MCP SDK requires pydantic 2, so the two cannot be resolved into one
+environment - `mcp-server/pytest.ini` exists because of that same conflict. It
+is a deployed service, built by `Dockerfile`, not a library anybody imports.
 
 ## 🚀 Getting Started
 

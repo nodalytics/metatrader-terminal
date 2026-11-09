@@ -10,6 +10,7 @@ description = "A NautilusTrader adapter for MetaTrader 5, over the metatrader-te
 # was the last with a cp311 wheel, so the pin and the interpreter had to move
 # together.
 requires-python = ">=3.12"
+readme = "README.md"
 license = { text = "MIT" }
 dependencies = [
     # 1.231 or later for the reason above. The docs still describe an API
