@@ -84,6 +84,70 @@ def _sent(result, what: str):
 #: and taken from the terminal's own table in `utils.constants`.
 INVALID_VOLUME = 10014
 
+#: MT5's `TRADE_RETCODE_INVALID_STOPS`, for the same reason.
+INVALID_STOPS = 10016
+
+
+def validate_stops(symbol: str, info, *, price: float, sl: float = None, tp: float = None) -> None:
+    """Refuse a stop or target closer to the price than the broker permits.
+
+    **`trade_stops_level` is a hard floor and it is not uniform.** Read off
+    the live terminal on 2026-11-09, in points:
+
+        Australia 200   500      US Tech 100     150
+        Wall Street 30  300      US SP 500        50
+
+    Five price points of required distance on one index against half a point
+    on another, from the same broker on the same clock. A stop inside the
+    floor is refused `10016 Invalid stops` - a code that names neither the
+    distance required nor which leg broke it, so a caller has to fetch
+    `symbol_info`, convert points to price and work it out. Which is the work
+    this service exists to have already done.
+
+    **The floor is `trade_stops_level * point`, not `trade_stops_level`.**
+    Comparing a price distance against a raw point count is the error that
+    read a 476% round trip off a spread column once; the unit is asserted by
+    a test rather than left to a reader.
+
+    `sl` or `tp` of `0.0` is **not** a stop at price zero - it is how MT5
+    spells "no stop", and the bridge's own market-order model requires `sl`
+    and sends `0.0` when the caller named none. Refusing those would refuse
+    every unprotected order.
+
+    Distance only, and not which side of the price a leg sits on. A `BUY`
+    whose stop is above its entry is a different error with the same retcode,
+    and this function is not a reimplementation of the terminal's validation:
+    it catches the undocumented limit early and leaves the rest to MT5, which
+    is the authority.
+    """
+    if info is None:
+        return
+
+    level = int(getattr(info, "trade_stops_level", 0) or 0)
+    point = float(getattr(info, "point", 0.0) or 0.0)
+    floor = level * point
+    price = float(price or 0.0)
+    if floor <= 0.0 or price <= 0.0:
+        # No floor stated, or no price to measure from. A missing specification
+        # means the terminal did not say, which is not a floor of zero to
+        # enforce or a reason to invent one.
+        return
+
+    for leg, value in (("sl", sl), ("tp", tp)):
+        if not value:
+            continue
+        gap = abs(price - float(value))
+        # Half a point of tolerance: a distance exactly at the floor is
+        # allowed by the broker, and binary floating point on values like
+        # 0.01 would otherwise refuse it.
+        if gap < floor - point / 2.0:
+            raise MT5ValidationError(
+                f"{leg} {float(value):g} is {gap:g} from the price {price:g} for {symbol}, "
+                f"inside the {floor:g} the broker requires "
+                f"(trade_stops_level {level} x point {point:g})",
+                code=INVALID_STOPS,
+            )
+
 
 def validate_against_symbol(symbol: str, info, *, volume: float) -> None:
     """Refuse an order the symbol's own specification already rules out.
@@ -171,6 +235,8 @@ class TradeService:
 
         # Correctly mapping price for long/short
         price = tick.ask if order_type.upper() == 'BUY' else tick.bid
+        # After the price, because the floor is a distance from it.
+        validate_stops(symbol, info, price=price, sl=sl, tp=tp)
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
