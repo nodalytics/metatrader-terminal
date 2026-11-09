@@ -5,7 +5,8 @@ from pydantic import BaseModel, Field, root_validator
 from app.utils.constants import (
     RETCODE_DESCRIPTIONS, 
     ORDER_TYPE_STR_MAP, 
-    ORDER_FILLING_STR_MAP
+    ORDER_FILLING_STR_MAP,
+    ORDER_COMMENT_MAX,
 )
 
 class AlgoTradingRequest(BaseModel):
@@ -27,7 +28,13 @@ class MarketOrderRequest(BaseModel):
     sl: float
     tp: Optional[float] = None
     deviation: int = 20
-    comment: str = ""
+    #: **Bounded, because the terminal's own refusal names the wrong thing.**
+    #: Over `ORDER_COMMENT_MAX` the `MetaTrader5` package rejects the request
+    #: before it becomes an order and answers `mt5_code -2`, which a caller
+    #: reading the retcode sees as `-2` and nothing more. A client sending 31
+    #: characters had every order refused that way and the cause took two days
+    #: to find. This turns it into a 422 naming the field and the limit.
+    comment: str = Field("", max_length=ORDER_COMMENT_MAX)
     magic: int = 0
     type_filling: str = "FOK"
 
@@ -39,7 +46,8 @@ class PendingOrderRequest(BaseModel):
     sl: Optional[float] = None
     tp: Optional[float] = None
     deviation: Optional[int] = 20
-    comment: Optional[str] = ""
+    #: Same limit as the market route; see `MarketOrderRequest.comment`.
+    comment: Optional[str] = Field("", max_length=ORDER_COMMENT_MAX)
     magic: Optional[int] = 0
     type_filling: str = "FOK"
     type_time: str = Field("GTC", pattern="^(GTC|DAY|SPECIFIED|SPECIFIED_DAY)$")

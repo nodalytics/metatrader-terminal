@@ -47,6 +47,7 @@ from nautilus_trader.model.identifiers import (
 from nautilus_trader.model.objects import AccountBalance, Currency, Money, Price, Quantity
 
 from .topics import VENUE_TRADING
+from .bridge import COMMENT_MAX
 from .config import MT5ExecClientConfig
 from .providers import MT5InstrumentProvider
 from .redact import redact
@@ -651,7 +652,14 @@ class MT5ExecutionClient(LiveExecutionClient):
             "volume": float(order.quantity),
             "deviation": self._cfg.deviation,
             "magic": self._cfg.magic,
-            "comment": str(order.client_order_id)[:31],
+            # **The tail, not the head, and `COMMENT_MAX` not a literal.** The
+            # head of a Nautilus client order id is a timestamp the terminal
+            # already records against the deal; the tail names the trader, the
+            # desk and the counter. Taking the first 31 produced the same
+            # string for every order a desk sent and for its neighbours on
+            # other symbols, and 31 was over the limit anyway - see
+            # `bridge.COMMENT_MAX`.
+            "comment": str(order.client_order_id)[-COMMENT_MAX:],
             "type_filling": await self._filling_for(order.instrument_id.symbol.value),
         }
         if order.has_price:

@@ -69,6 +69,8 @@ import contextlib
 from datetime import UTC, datetime
 from typing import Any
 
+from .bridge import COMMENT_MAX
+
 #: What `rpyc.utils.server` listens on by default, and what `mt5linux` uses.
 DEFAULT_PORT = 18812
 
@@ -384,7 +386,7 @@ class Proxy:
             "price": float(price),
             "deviation": int(body.get("deviation") or 20),
             "magic": int(body.get("magic") or 0),
-            "comment": str(body.get("comment") or "")[:31],
+            "comment": str(body.get("comment") or "")[-COMMENT_MAX:],
             "type_time": await self._const("ORDER_TIME_GTC"),
             "type_filling": await self._filling(str(body.get("type_filling") or "IOC")),
         }
