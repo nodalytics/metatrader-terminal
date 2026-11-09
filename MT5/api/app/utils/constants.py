@@ -124,3 +124,30 @@ TRAILING_STOP_STEPS = [
     {'trigger_pnl_multiplier': 0.12, 'new_sl_pnl_multiplier': 0.05},
     {'trigger_pnl_multiplier': 0.06, 'new_sl_pnl_multiplier': 0.025},
 ]
+
+#: The longest `comment` the terminal will accept on an order request.
+#:
+#: **Measured against a live terminal on 2026-11-09, not read off a
+#: reference.** A client sending 31 characters had every order refused with
+#: `Invalid "comment" argument` and `mt5_code -2` - the `MetaTrader5` package
+#: rejecting the request before it became an order, so no retcode, no deal and
+#: nothing in the terminal to find. Swept at volume 0, where the answer flips
+#: to `Invalid volume` as soon as the comment is acceptable:
+#:
+#:     31 -> Invalid "comment" argument
+#:     30 -> Invalid "comment" argument
+#:     28 -> Invalid volume   (i.e. the comment was accepted)
+#:     25 -> Invalid volume
+#:     20 -> Invalid volume
+#:
+#: 29 was not tested. 28 is the largest proven value and one more character is
+#: not worth re-opening a fault that took two days to find, because the symptom
+#: names the wrong field: the terminal blames `comment` only in `mt5_msg`, and
+#: a caller reading the retcode alone sees `-2` and learns nothing.
+#:
+#: Declared as a request-validation limit rather than applied by truncating.
+#: A comment is how a client correlates its own orders with the terminal's
+#: deals, so silently shortening one would hand back a different identifier
+#: than the caller sent; a 422 naming the field and the limit is something a
+#: client can act on.
+ORDER_COMMENT_MAX = 28

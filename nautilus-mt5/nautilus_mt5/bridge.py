@@ -58,6 +58,21 @@ STREAM_BACKLOG = 1024
 STREAM_HEARTBEAT = 20
 
 
+#: The longest comment the terminal accepts on an order.
+#:
+#: **Measured against a live terminal on 2026-11-09.** At 31 characters every
+#: order was refused with `Invalid "comment" argument`, mt5_code -2: the
+#: `MetaTrader5` package rejecting the request before it became an order, so
+#: there was never a retcode, a deal, or anything in the terminal to find.
+#: Swept at volume 0, where the answer flips to `Invalid volume` as soon as
+#: the comment is acceptable - 31 and 30 refused, 28, 25 and 20 accepted.
+#:
+#: The bridge now declares the same limit on its request models, so a long
+#: comment is a 422 naming the field. This truncation is what stops a client
+#: needing to know that.
+COMMENT_MAX = 28
+
+
 class BridgeError(RuntimeError):
     """The bridge answered, and the answer was a refusal."""
 
@@ -406,7 +421,7 @@ class Bridge:
             "volume": float(body.get("volume") or 0.0),
             "sl": float(body.get("sl") or 0.0),
             "deviation": int(body.get("deviation") or 20),
-            "comment": str(body.get("comment") or "")[:31],
+            "comment": str(body.get("comment") or "")[-COMMENT_MAX:],
             "magic": int(body.get("magic") or 0),
             # FOK, not IOC: every symbol on this account reports `filling_mode`
             # 1 (FOK only) and IOC returns `10030` on every order. The caller
@@ -417,17 +432,59 @@ class Bridge:
         if body.get("tp"):
             shared["tp"] = float(body["tp"])
         if price is None:
-            return (await self.post("/trading/order", {**shared, "order_type": side})) or {}
-        return (
-            await self.post(
-                "/orders/pending",
-                {
-                    **shared,
-                    "order_type": "BUY_LIMIT" if buy else "SELL_LIMIT",
-                    "price": float(price),
-                },
-            )
-        ) or {}
+            return await self._order_post("/trading/order", {**shared, "order_type": side})
+        return await self._order_post(
+            "/orders/pending",
+            {
+                **shared,
+                "order_type": "BUY_LIMIT" if buy else "SELL_LIMIT",
+                "price": float(price),
+            },
+        )
+
+    async def _order_post(self, route: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST an order, reading a refusal out of the **400** it arrives as.
+
+        **A refused order is not a 200 carrying a retcode.** The bridge raises
+        `MT5OrderError` for any retcode it does not accept and that becomes an
+        HTTP 400 with the code in the body:
+
+            HTTP 400
+            {"error": "Order failed: Invalid volume", "code": 10014, ...}
+
+        `_send` raises at or above 400, so every genuine refusal reached
+        `execution._place` as a `BridgeError` before it could be read. That
+        left the whole refusal path unreachable for the case it exists for -
+        the broker's own comment, and the autotrading retcode that says the
+        terminal will accept nothing at all.
+
+        A 4xx with **no** retcode still raises: a 401 is not a broker refusing
+        a trade, and reporting a bad key as a rejected order would present a
+        broken deployment as an ordinary bad trade.
+        """
+        response = await self.session.request("POST", route, json=body)
+        if response.status_code < 400:
+            try:
+                return response.json() or {}
+            except ValueError as exc:
+                raise BridgeError(f"POST {route} returned non-JSON") from exc
+        detail = f"POST {route} -> {response.status_code}: {response.text[:200]}"
+        try:
+            payload = response.json() or {}
+        except ValueError:
+            raise BridgeError(detail) from None
+        code = int(payload.get("code") or 0)
+        if code == 0:
+            raise BridgeError(detail)
+        # The terminal's own words rather than the envelope: `mt5_msg` is what
+        # the terminal said, `error` wraps it in the bridge's narration, and
+        # the body itself is JSON that ends up in whatever a client shows a
+        # person. `mt5_msg` reads `Success` on a refusal the bridge formed, so
+        # it is used only when it carries something.
+        said = str(payload.get("mt5_msg") or "").strip()
+        if not said or said.lower() == "success":
+            said = str(payload.get("error") or "").strip()
+        return {"success": False, "result": {"retcode": code, "comment": said}}
 
     async def modify_order(self, ticket: int, price: float) -> dict[str, Any]:
         """Move a **resting order**, which is not the same call as a stop move.
