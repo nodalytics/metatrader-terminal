@@ -89,6 +89,10 @@ CALLS = frozenset(
         "market_book_release",
         "order_calc_margin",
         "order_calc_profit",
+        # Read-only despite the name and the neighbours: `order_check`
+        # validates a request and returns the margin it would need, without
+        # sending anything. `POST /trading/order_check` is the only caller.
+        "order_check",
         "order_send",
         "orders_get",
         "orders_total",

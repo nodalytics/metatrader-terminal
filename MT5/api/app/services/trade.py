@@ -80,6 +80,11 @@ def _sent(result, what: str):
         code=int(code),
     )
 
+#: MT5's `TRADE_RETCODE_INVALID_VOLUME`. Named rather than inlined three times,
+#: and taken from the terminal's own table in `utils.constants`.
+INVALID_VOLUME = 10014
+
+
 def validate_against_symbol(symbol: str, info, *, volume: float) -> None:
     """Refuse an order the symbol's own specification already rules out.
 
@@ -98,6 +103,15 @@ def validate_against_symbol(symbol: str, info, *, volume: float) -> None:
     than with `%`: steps are values like 0.01 and binary floating point makes
     `0.03 % 0.01` a number just under the step rather than zero, which would
     refuse a volume every broker accepts.
+
+    **It carries `10014`, MT5's own code for this.** Checking earlier must not
+    mean answering with less: clients read `code` out of the error body to get
+    a retcode - `mt5_mcp.bridge` does, and its contract test pinned `retcode
+    == 10014` for a below-minimum volume. Reporting the same condition the
+    terminal would have reported, under the code the terminal would have used,
+    keeps every such client working while `kind` adds what they could not get
+    before. It is not an invented code: 10014 is "Invalid volume in the
+    request", which is exactly what this is.
     """
     if info is None:
         return
@@ -109,11 +123,13 @@ def validate_against_symbol(symbol: str, info, *, volume: float) -> None:
 
     if low and volume < low:
         raise MT5ValidationError(
-            f"volume {volume:g} is below volume_min {low:g} for {symbol}"
+            f"volume {volume:g} is below volume_min {low:g} for {symbol}",
+            code=INVALID_VOLUME,
         )
     if high and volume > high:
         raise MT5ValidationError(
-            f"volume {volume:g} is above volume_max {high:g} for {symbol}"
+            f"volume {volume:g} is above volume_max {high:g} for {symbol}",
+            code=INVALID_VOLUME,
         )
     if step > 0:
         steps = volume / step
@@ -121,7 +137,8 @@ def validate_against_symbol(symbol: str, info, *, volume: float) -> None:
             nearest = round(steps) * step
             raise MT5ValidationError(
                 f"volume {volume:g} is not a multiple of volume_step {step:g} "
-                f"for {symbol}; nearest is {nearest:g}"
+                f"for {symbol}; nearest is {nearest:g}",
+                code=INVALID_VOLUME,
             )
 
 
