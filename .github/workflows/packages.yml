@@ -1,0 +1,88 @@
+# **Builds the two installable things in this repository and then imports
+# them.** A wheel that builds is not a wheel that works: `uv_build` derives a
+# package's module name from its *distribution* name, so `mt5-mcp-server` went
+# looking for `mt5_mcp_server/` while the import is `mt5_mcp`, and the only
+# symptom was a build failure. The reverse - a wheel that builds and ships the
+# wrong tree - is the one no build step catches, which is why each job installs
+# into a clean environment and imports the module rather than stopping at
+# "Successfully built".
+#
+# `MT5/api` is deliberately absent. It pins `pydantic<2.0.0` where the MCP SDK
+# needs pydantic 2, so it is not a workspace member and cannot be resolved
+# alongside these; it is a deployed service, built by `docker.yml`.
+name: Packages
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+concurrency:
+  group: packages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `package` is the distribution name uv resolves; `module` is what a
+          # client types in an import. They differ for the MCP server, which is
+          # the whole reason the import step exists.
+          - package: nautilus-mt5
+            module: nautilus_mt5
+          - package: mt5-mcp-server
+            module: mt5_mcp
+    name: ${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      # 3.12 because `nautilus-mt5` requires it: `nautilus_trader` 1.221's
+      # backtest engine aborts on one bar and every release that fixes it is
+      # cp312 or later. Pinned here rather than left to the runner's default so
+      # a runner image bump cannot quietly change which interpreter the wheels
+      # are checked against.
+      - run: uv python install 3.12
+
+      - name: Build the wheel and the sdist
+        run: uv build --package ${{ matrix.package }} --out-dir dist
+
+      # Not `uv sync`: that would resolve the whole workspace and prove nothing
+      # about the artefact. This installs the built wheel into an empty
+      # environment, which is what somebody depending on this repository gets.
+      - name: Install the built wheel into a clean environment
+        run: |
+          uv venv --python 3.12 .probe
+          uv pip install --python .probe/bin/python dist/*.whl
+
+      - name: Import it
+        run: .probe/bin/python -c "import ${{ matrix.module }}; print('${{ matrix.module }}', 'ok')"
+
+      - name: Check the console script is installed
+        if: matrix.package == 'mt5-mcp-server'
+        run: test -x .probe/bin/mt5-mcp
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}-dist
+          path: dist/
+
+  # The lockfile is the point of the workspace: one resolution, so a wire-level
+  # dependency cannot drift between two clients of the same bridge without this
+  # failing. `--locked` fails rather than silently re-resolving.
+  workspace:
+    runs-on: ubuntu-latest
+    name: the workspace resolves
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      # `--check` and nothing after it: a fallback that re-resolves would make
+      # this job pass on a stale lock, which is the one thing it exists to fail
+      # on.
+      - run: uv lock --check

@@ -1,0 +1,23 @@
+# The workspace root, and **only** a root: it declares no `[project]`, so uv
+# treats it as a virtual workspace and there is no `metatrader-terminal`
+# distribution to build or install. The two things in here that a client
+# installs are the members below.
+#
+# ── why `MT5/api` is not a member ───────────────────────────────────────────
+#
+# It cannot be. The bridge's FastAPI application pins `pydantic<2.0.0` and the
+# MCP SDK requires pydantic 2, so the two cannot be resolved into one
+# environment - `mcp-server/pytest.ini` and its `conftest.py` exist because of
+# that same conflict, and run one suite or the other depending on which
+# pydantic the interpreter has. A workspace resolves a single lockfile across
+# all its members, so adding the API would make `uv sync` unsatisfiable rather
+# than making the API installable. It is a deployed service, built by
+# `Dockerfile`, not a library anybody imports.
+#
+# ── why the members share one lockfile ──────────────────────────────────────
+#
+# Both are clients of the same HTTP bridge and both carry their own copy of a
+# `bridge.py` against it. One resolution means a wire-level dependency cannot
+# drift between them without the lock saying so.
+[tool.uv.workspace]
+members = ["nautilus-mt5", "mcp-server"]
